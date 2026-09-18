@@ -1,0 +1,5 @@
+setup/logs/
+setup/beacon_dashboard_current.json
+node_modules/
+.vs/
+*.zip
