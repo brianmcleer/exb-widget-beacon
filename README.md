@@ -111,6 +111,19 @@ python setup/beacon_dashboard_setup.py --portal https://gis.example.org/portal -
 
 `--widgets` is the comma separated list of your widgets' manifest names. The script prints the dashboard URL. See [docs/DASHBOARD.md](docs/DASHBOARD.md) for what each panel shows and how to change the layout.
 
+### 3b. Or host the standalone dashboard
+
+`dashboard/index.html` is a single page that reads the same view and shows what ArcGIS Dashboards cannot: sessions, an adoption matrix of widgets by app, a weekday by hour heatmap, grouped error signatures with sample stacks, and deployed versions against the latest GitHub release. Edit the `CONFIG` block at the top, drop the folder on any static web server (IIS `web.config` included), done. See [docs/STANDALONE-DASHBOARD.md](docs/STANDALONE-DASHBOARD.md).
+
+### 4. Optional: email instead of a dashboard
+
+```
+python setup/beacon_digest.py digest --portal https://gis.example.org/portal --user publisher --to gis@example.org --widgets my-widget,other-widget --github-owner you
+python setup/beacon_digest.py alert  --portal https://gis.example.org/portal --user publisher --to gis@example.org
+```
+
+`digest` is a weekly summary (events, sessions, errors against the previous week, top widgets and features, new error signatures, widgets behind their latest release). `alert` runs hourly and sends one email when a new error signature appears or a widget's error rate spikes, remembering what it already sent. Both are plain SMTP; `--dry-run` writes the HTML instead of sending. Schedule them with Task Scheduler or cron.
+
 ## Requirements and compatibility
 
 - Experience Builder Developer Edition 1.13 or later (tested on 1.21). `beacon.ts` imports only `getAppStore` from `jimu-core`.
@@ -127,11 +140,14 @@ A busy public app produces a few hundred rows a day. Each row is under 1 KB. Hos
 ```
 src/beacon.ts                       the module that goes in each widget
 setup/beacon_sink_setup.py          creates and locks down the table and the view
-setup/beacon_dashboard_setup.py     creates or updates the dashboard item
+setup/beacon_dashboard_setup.py     creates or updates the ArcGIS Dashboards item
+setup/beacon_digest.py              weekly email digest and hourly error alerts
+dashboard/                          standalone HTML dashboard for any static web server
 examples/                           a class widget and a function widget, fully wired
 docs/INTEGRATION.md                 wiring a widget, naming actions, what not to send
 docs/PRIVACY.md                     what is and is not collected, and why it is safe to publish the sink
-docs/DASHBOARD.md                   the panels, the schema note, changing the layout
+docs/DASHBOARD.md                   the ArcGIS Dashboards panels, the schema note, changing the layout
+docs/STANDALONE-DASHBOARD.md        hosting and configuring the HTML dashboard
 docs/FAQ.md                         the questions people ask
 CHANGELOG.md
 LICENSE                             Apache-2.0

@@ -2,6 +2,10 @@
 
 Newest first.
 
+## 1.1.1 (2026-09-18)
+
+- `beacon.ts`: the session id falls back to `crypto.getRandomValues` and then to a clock value, instead of `Math.random`. CodeQL flags `Math.random` as insecure randomness; the id is only used to group one page load's events, but the alert is noise in every repository that ships the file.
+
 ## 1.1.0 (2026-09-18)
 
 - First public release.
