@@ -26,7 +26,9 @@ Usernames, IPs, locations, search terms, feature attributes, URLs with query str
 
 1. `setup/beacon_sink_setup.py create --write` against your portal (Enterprise 10.9.1+ with a hosting server, or ArcGIS Online). Creates the table, locks it to Create only, shares it with Everyone, tags it, creates the organization only view. `verify` should print ALL PASS.
 2. Copy `src/beacon.ts` into each widget's `src/shared/`, add the init line and a few action lines, rebuild, republish the apps.
-3. `setup/beacon_dashboard_setup.py --write` with your widget names. It prints the dashboard URL.
+3. `setup/beacon_dashboard_setup.py --write` with your widget names. It prints the dashboard URL. Or skip Dashboards and drop `dashboard/index.html` on any web server: it reads the same view and adds sessions, an adoption matrix of widgets by app, hour of day patterns, errors grouped by message, and deployed versions checked against GitHub releases.
+
+There is also a weekly email digest and an hourly alert script if you would rather not open a dashboard at all.
 
 About fifteen minutes. The README has the exact commands, INTEGRATION.md covers naming and what not to send, FAQ.md covers ArcGIS Online credits, GDPR, why a public Create only service is fine, and what happens when the table is down (nothing; widgets never wait on telemetry).
 

@@ -1,0 +1,30 @@
+<!DOCTYPE html>
+<html>
+  <head>
+    <meta charset="UTF-8">
+    <title>Sign-in callback</title>
+    <script>
+      // Standard ArcGIS Maps SDK OAuth callback. Reads the token from the redirect URL and hands
+      // it to the page that opened the popup, then closes. Must be served from the same origin as
+      // index.html and registered as a Redirect URI on the portal's OAuth application item.
+      function loadHandler() {
+        if (opener) {
+          if (location.hash) {
+            if (typeof opener.require === "function" && opener.require("esri/kernel")) {
+              opener.require("esri/kernel").id.setOAuthResponseHash(location.hash);
+            } else {
+              opener.dispatchEvent(new CustomEvent("arcgis:auth:hash", { detail: location.hash }));
+            }
+            close();
+          } else if (location.search) {
+            opener.dispatchEvent(new CustomEvent("arcgis:auth:location:search", { detail: location.search }));
+            close();
+          }
+        } else {
+          close();
+        }
+      }
+    </script>
+  </head>
+  <body onload="loadHandler();"></body>
+</html>

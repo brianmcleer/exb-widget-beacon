@@ -2,6 +2,12 @@
 
 Newest first.
 
+## 1.2.0 (2026-09-18)
+
+- New `dashboard/`: a standalone HTML dashboard (ArcGIS Maps SDK for sign in and queries, Chart.js) for any static web server. Sessions, change against the previous period, adoption matrix, weekday by hour heatmap, grouped error signatures with sample stacks, deployed versions against the latest GitHub release, widget health table, live feed, cross filtering, dark mode, CSV and PNG export, shareable URL state.
+- New `setup/beacon_digest.py`: weekly HTML email digest and hourly alerts on new error signatures or error rate spikes, plain SMTP, brand neutral, dry run mode.
+- `beacon_dashboard_setup.py` 1.4.1: errors by widget, features by widget, least used ranking, four band layout, and panel titles (Dashboards reads them from `caption`, so every chart had been unlabeled).
+
 ## 1.1.1 (2026-09-18)
 
 - `beacon.ts`: the session id falls back to `crypto.getRandomValues` and then to a clock value, instead of `Math.random`. CodeQL flags `Math.random` as insecure randomness; the id is only used to group one page load's events, but the alert is noise in every repository that ships the file.

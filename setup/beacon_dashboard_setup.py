@@ -141,9 +141,9 @@ def axis(category, angle=0):
     return a
 
 
-def bar(view_id, name, field, rules, color=BLUE, top=15):
+def bar(view_id, name, field, rules, color=BLUE, top=15, desc=True):
     w = base(name, "serialChartWidget")
-    w.update({"datasets": [dataset(view_id, rules, [COUNT], [field], ["COUNT_OBJECTID desc"], top)],
+    w.update({"datasets": [dataset(view_id, rules, [COUNT], [field], ["COUNT_OBJECTID " + ("desc" if desc else "asc")], top)],
               "actionMode": "monoSelection", "categoryType": "groupByValues",
               "valueFormat": {"name": "value", "prefix": True, "style": "decimal", "useGrouping": True, "maximumFractionDigits": 0},
               "labelFormat": {"name": "label", "prefix": True, "style": "decimal", "useGrouping": True, "maximumFractionDigits": 0},
@@ -323,16 +323,26 @@ def build(view_id):
     popular = bar(view_id, "Most used widgets (layout widgets excluded)", "widget_name", [NOT_PLUMBING])
     features = bar(view_id, "Features used (actions other than open and loaded)", "action", [NOT_LIFECYCLE], [255, 170, 0, 255])
     err_trend = trend(view_id, "Errors per day", err, RED)
+    err_widgets = bar(view_id, "Errors by widget", "widget_name", err, RED, 10)
     latest = error_list(view_id, err)
     versions = stacked_bar(view_id, "Custom widget versions in the field", "widget_version", "widget_name", [ONLY_CUSTOM])
+    # Which widget each recorded feature belongs to. Split by widget_name, the same split shape as the
+    # versions chart, which is the one Enterprise 12.1 renders without warning triangles.
+    feat_widgets = stacked_bar(view_id, "Features used, by widget", "action", "widget_name", [NOT_LIFECYCLE, ONLY_CUSTOM], 20, legend=False)
+    # Ascending, so the top of this chart is what nobody opens: retirement candidates, or widgets that
+    # were built and never added to an app.
+    quiet = bar(view_id, "Quiet custom widgets (least used first)", "widget_name", [ONLY_CUSTOM], [140, 140, 150, 255], 10, desc=False)
     apps = bar(view_id, "Events by app", "app_name", none, [91, 178, 89, 255])
     browsers = pie(view_id, "Browsers", "browser", none)
-    widgets = kpis + [activity, popular, features, err_trend, latest, versions, apps, browsers]
+    widgets = kpis + [activity, popular, features, err_trend, err_widgets, latest, versions, feat_widgets, quiet, apps, browsers]
 
+    # Four bands, top to bottom: the numbers, what people use, what is broken, and the long tail.
+    # A "row" stack lays its children out top to bottom; a "col" stack lays them left to right.
     layout = {"type": "dockingLayout", "rootElement": stack("row", [
-        stack("col", [item(w, 0.25, 1) for w in kpis], 1, 0.14),
-        stack("col", [item(activity, 0.45, 1), item(popular, 0.30, 1), item(features, 0.25, 1)], 1, 0.43),
-        stack("col", [item(err_trend, 0.20, 1), item(latest, 0.25, 1), item(versions, 0.25, 1), item(apps, 0.18, 1), item(browsers, 0.12, 1)], 1, 0.43)])}
+        stack("col", [item(w, 0.25, 1) for w in kpis], 1, 0.13),
+        stack("col", [item(activity, 0.44, 1), item(popular, 0.30, 1), item(features, 0.26, 1)], 1, 0.31),
+        stack("col", [item(err_trend, 0.26, 1), item(err_widgets, 0.26, 1), item(latest, 0.48, 1)], 1, 0.30),
+        stack("col", [item(versions, 0.30, 1), item(feat_widgets, 0.26, 1), item(quiet, 0.20, 1), item(apps, 0.13, 1), item(browsers, 0.11, 1)], 1, 0.26)])}
 
     selectors = [date_selector("Period", widgets),
                  category_selector(view_id, "Widget", "widget_name", widgets),

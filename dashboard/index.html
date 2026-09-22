@@ -1,0 +1,1588 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Widget Beacon — Dashboard</title>
+<meta name="description" content="Usage and error telemetry from ArcGIS Experience Builder custom widgets.">
+<meta name="robots" content="noindex">
+
+<!-- Favicon: an inline SVG beacon glyph, so the folder needs no image files. -->
+<link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='6' fill='%23003a55'/%3E%3Ccircle cx='16' cy='18' r='3' fill='%23ffffff'/%3E%3Cpath d='M9.5 12.5a9 9 0 0 1 13 0' fill='none' stroke='%230083bd' stroke-width='2.4' stroke-linecap='round'/%3E%3Cpath d='M6 9a14 14 0 0 1 20 0' fill='none' stroke='%230083bd' stroke-width='2.4' stroke-linecap='round' opacity='.6'/%3E%3C/svg%3E">
+
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Montserrat:wght@400;500;600;700&display=swap">
+
+<!--
+  Load order matters, same pattern as the Report a Concern dashboard:
+    1. Chart.js with define.amd masked so it registers as window.Chart instead of with the
+       Dojo AMD loader the ArcGIS SDK brings in next.
+    2. ArcGIS Maps SDK for JavaScript: IdentityManager handles the OAuth sign in and attaches
+       tokens to every request against the portal. We use esri/request for the REST queries.
+-->
+<script>
+  window.__priorDefineAmd = (typeof define !== "undefined" && define.amd) || null;
+  if (typeof define !== "undefined") { define.amd = undefined; }
+</script>
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.4/dist/chart.umd.min.js"></script>
+<script>
+  if (window.__priorDefineAmd && typeof define !== "undefined") { define.amd = window.__priorDefineAmd; }
+</script>
+<link rel="stylesheet" href="https://js.arcgis.com/4.34/esri/themes/light/main.css">
+<script src="https://js.arcgis.com/4.34/"></script>
+
+<script>
+  // Resolve the theme before first paint. "auto" follows the OS; the header toggle overrides it.
+  (function () {
+    var pref = "auto"; try { pref = localStorage.getItem("wb.theme") || "auto"; } catch (e) {}
+    var dark = pref === "dark" || (pref === "auto" && window.matchMedia("(prefers-color-scheme: dark)").matches);
+    document.documentElement.setAttribute("data-theme", dark ? "dark" : "light");
+    document.documentElement.setAttribute("data-theme-pref", pref);
+  })();
+</script>
+<style>
+/* ============================================================================
+   Tokens. Light is the default; dark follows the OS unless the viewer picks a
+   theme from the header toggle (stored in localStorage as data-theme on <html>).
+   Brand: City of Grand Junction Brand & Style Guide. Montserrat (approved web
+   font), City Blue 2 #003a55 header, City Blue 1 #0083bd for every magnitude
+   mark, one red reserved for errors, City Green 2 for "good". The browser share
+   donut is a City Blue ramp ordered by share with a labeled legend, because the
+   City palette's greens and browns cannot be told apart by colorblind readers
+   when used as categorical fills. Identity never depends on color alone.
+   ========================================================================== */
+:root {
+  color-scheme: light;
+  --city-blue-1: #0083bd;
+  --city-blue-2: #003a55;
+  --city-green-2: #69812d;
+
+  --color-bg: #f5f7f9;
+  --color-surface: #ffffff;
+  --color-surface-2: #fbfcfd;
+  --color-border: #d8dde2;
+  --color-border-soft: #e8ecef;
+  --color-text: #1a1f24;
+  --color-text-soft: #4b5760;
+  --color-text-mute: #6b757d;
+  --color-accent: var(--city-blue-1);
+  --color-accent-soft: rgba(0, 131, 189, 0.12);
+  --header-bg: #003a55;
+  --header-text: #ffffff;
+
+  --viz-primary: #0083bd;      /* magnitude bars, lines */
+  --viz-primary-soft: rgba(0, 131, 189, 0.18);
+  --viz-error: #d83b01;        /* the only red on the page */
+  --viz-error-soft: rgba(216, 59, 1, 0.16);
+  --viz-good: #69812d;         /* City Green 2 */
+  --viz-warn: #c47b00;
+  --viz-grid: #eef0f3;
+  --viz-heat-0: #eef4f8;       /* sequential ramp for heatmaps, light to dark */
+  --viz-heat-1: #cfe3ef;
+  --viz-heat-2: #9cc6e0;
+  --viz-heat-3: #5ea3cc;
+  --viz-heat-4: #2b7fb3;
+  --viz-heat-5: #0f5a86;
+  --viz-heat-6: #003a55;
+  --s-other: #8a949c;      /* "Other" slice and de-emphasized bars */
+
+  --tooltip-bg: rgba(15, 23, 30, 0.94);
+  --tooltip-text: #ffffff;
+  --shadow-sm: 0 1px 2px rgba(15, 23, 30, 0.05);
+  --shadow-md: 0 2px 6px rgba(15, 23, 30, 0.07), 0 1px 2px rgba(15, 23, 30, 0.04);
+  --shadow-lg: 0 6px 16px rgba(15, 23, 30, 0.10), 0 2px 4px rgba(15, 23, 30, 0.05);
+  --r-card: 4px;
+  --r-chip: 14px;
+  --ease: cubic-bezier(0.4, 0, 0.2, 1);
+  --tx: 160ms;
+  --font: "Montserrat", "Segoe UI", system-ui, -apple-system, sans-serif;
+  --mono: ui-monospace, "Cascadia Mono", Consolas, "Courier New", monospace;
+}
+/* The theme script below resolves "auto" to light or dark and stamps data-theme on <html>
+   before first paint, so the CSS only needs one dark scope. */
+:root[data-theme="dark"] {
+  color-scheme: dark;
+  --color-bg: #0f1419;
+  --color-surface: #1a1f26;
+  --color-surface-2: #232932;
+  --color-border: #2f3742;
+  --color-border-soft: #262d36;
+  --color-text: #e8ecef;
+  --color-text-soft: #b8c0c8;
+  --color-text-mute: #8e98a3;
+  --color-accent: #4da6cc;
+  --color-accent-soft: rgba(77, 166, 204, 0.16);
+  --viz-primary: #4da6cc;
+  --viz-primary-soft: rgba(77, 166, 204, 0.22);
+  --viz-error: #ff6a3d;
+  --viz-error-soft: rgba(255, 106, 61, 0.2);
+  --viz-good: #9bbf5a;
+  --viz-warn: #e6a647;
+  --viz-grid: #2a313a;
+  --viz-heat-0: #1e2730;
+  --viz-heat-1: #22394b;
+  --viz-heat-2: #274d68;
+  --viz-heat-3: #2c6488;
+  --viz-heat-4: #337fab;
+  --viz-heat-5: #4da6cc;
+  --viz-heat-6: #8fd0ea;
+  --s-other: #6f7a84;
+  --tooltip-bg: rgba(255, 255, 255, 0.94);
+  --tooltip-text: #1a1f26;
+  --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.35);
+  --shadow-md: 0 2px 6px rgba(0, 0, 0, 0.45), 0 1px 2px rgba(0, 0, 0, 0.3);
+  --shadow-lg: 0 6px 16px rgba(0, 0, 0, 0.5), 0 2px 4px rgba(0, 0, 0, 0.4);
+}
+
+/* ---------------------------------------------------------------- base */
+*, *::before, *::after { box-sizing: border-box; }
+html, body { margin: 0; padding: 0; }
+html { height: 100%; }
+body {
+  font-family: var(--font);
+  font-size: 13px;
+  line-height: 1.4;
+  color: var(--color-text);
+  background: var(--color-bg);
+  min-height: 100vh;
+  display: flex;
+  flex-direction: column;
+  -webkit-font-smoothing: antialiased;
+}
+a { color: var(--color-accent); }
+button { font-family: inherit; font-size: inherit; cursor: pointer; }
+:focus-visible { outline: 2px solid var(--color-accent); outline-offset: 2px; }
+.sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0,0,0,0); white-space: nowrap; border: 0; }
+[hidden] { display: none !important; }
+
+/* ---------------------------------------------------------------- header */
+header.top {
+  display: flex; align-items: center; gap: 16px;
+  padding: 0 18px; height: 58px; flex-shrink: 0;
+  background: var(--header-bg); color: var(--header-text);
+  box-shadow: 0 2px 4px rgba(0, 58, 85, 0.18);
+  position: sticky; top: 0; z-index: 20;
+}
+header.top .logo { height: 34px; width: auto; display: block; }
+header.top .logo-link { display: flex; align-items: center; }
+header.top h1.title {
+  margin: 0; font-size: 17px; font-weight: 600; letter-spacing: 0.01em;
+  flex: 1; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+header.top h1.title small { font-weight: 400; opacity: 0.75; margin-left: 10px; font-size: 12px; }
+header.top .meta { display: flex; align-items: center; gap: 10px; font-size: 12px; }
+.live-dot { width: 8px; height: 8px; border-radius: 50%; background: #9bbf5a; box-shadow: 0 0 0 0 rgba(155,191,90,.6); display: inline-block; margin-right: 6px; vertical-align: middle; }
+.live-dot.pulse { animation: pulse 2s infinite; }
+.live-dot.stale { background: #e6a647; animation: none; }
+.live-dot.err { background: #ff6a3d; animation: none; }
+@keyframes pulse { 0% { box-shadow: 0 0 0 0 rgba(155,191,90,.6);} 70% { box-shadow: 0 0 0 8px rgba(155,191,90,0);} 100% { box-shadow: 0 0 0 0 rgba(155,191,90,0);} }
+.hbtn {
+  background: rgba(255,255,255,0.12); color: #fff; border: 1px solid rgba(255,255,255,0.25);
+  border-radius: 4px; padding: 5px 10px; font-weight: 500; font-size: 12px;
+  transition: background var(--tx) var(--ease);
+}
+.hbtn:hover { background: rgba(255,255,255,0.22); }
+.hbtn[aria-pressed="true"] { background: rgba(255,255,255,0.3); }
+.seg { display: inline-flex; border: 1px solid rgba(255,255,255,0.25); border-radius: 4px; overflow: hidden; }
+.seg .hbtn { border: 0; border-radius: 0; padding: 5px 8px; }
+.seg .hbtn + .hbtn { border-left: 1px solid rgba(255,255,255,0.2); }
+
+/* ---------------------------------------------------------------- banner */
+.banner {
+  padding: 8px 18px; font-size: 12px; font-weight: 500;
+  background: var(--color-accent-soft); color: var(--color-text);
+  border-bottom: 1px solid var(--color-border-soft);
+}
+.banner.warn { background: rgba(196,123,0,0.14); }
+.banner.err { background: var(--viz-error-soft); }
+.banner a, .banner button { margin-left: 8px; }
+
+/* ---------------------------------------------------------------- filter bar */
+.filter-bar {
+  display: flex; align-items: center; flex-wrap: wrap; gap: 8px 14px;
+  padding: 8px 18px; background: var(--color-surface);
+  border-bottom: 1px solid var(--color-border-soft); box-shadow: var(--shadow-sm);
+  position: sticky; top: 58px; z-index: 15;
+}
+.filter-bar .label { font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.06em; color: var(--color-text-mute); }
+.chips { display: inline-flex; gap: 4px; flex-wrap: wrap; align-items: center; }
+.chips button, .chip {
+  border: 1px solid var(--color-border); background: var(--color-surface-2); color: var(--color-text-soft);
+  border-radius: var(--r-chip); padding: 3px 10px; font-size: 12px; font-weight: 500; line-height: 1.4;
+  transition: all var(--tx) var(--ease);
+}
+.chips button:hover { border-color: var(--color-accent); color: var(--color-text); }
+.chips button.active, .chips button[aria-pressed="true"] { background: var(--color-accent); border-color: var(--color-accent); color: #fff; }
+.chip.filter { background: var(--color-accent-soft); border-color: transparent; color: var(--color-text); display: inline-flex; align-items: center; gap: 6px; }
+.chip.filter b { font-weight: 600; }
+.chip.filter .x { border: 0; background: transparent; color: inherit; padding: 0 2px; font-size: 14px; line-height: 1; opacity: 0.7; }
+.chip.filter .x:hover { opacity: 1; }
+.filter-bar .hint { color: var(--color-text-mute); font-size: 12px; }
+.filter-bar .spacer { flex: 1; }
+.toggle { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; color: var(--color-text-soft); cursor: pointer; user-select: none; }
+.toggle input { accent-color: var(--color-accent); width: 15px; height: 15px; margin: 0; }
+.linkish { border: 0; background: none; color: var(--color-accent); font-weight: 500; padding: 2px 4px; }
+.linkish:hover { text-decoration: underline; }
+
+.date-popover {
+  position: absolute; top: 100%; right: 18px; margin-top: 6px; z-index: 30;
+  background: var(--color-surface); border: 1px solid var(--color-border); border-radius: 6px;
+  box-shadow: var(--shadow-lg); padding: 12px; width: 300px; font-size: 12px;
+}
+.date-popover .row { display: grid; grid-template-columns: 48px 1fr; gap: 8px; align-items: center; margin-bottom: 8px; }
+.date-popover input[type=date] { font-family: inherit; font-size: 12px; padding: 4px 6px; border: 1px solid var(--color-border); border-radius: 4px; background: var(--color-surface-2); color: var(--color-text); }
+.date-popover .actions { display: flex; justify-content: flex-end; gap: 6px; margin-top: 8px; }
+.btn { border: 1px solid var(--color-border); background: var(--color-surface-2); color: var(--color-text); border-radius: 4px; padding: 5px 10px; font-size: 12px; font-weight: 500; }
+.btn.primary { background: var(--color-accent); border-color: var(--color-accent); color: #fff; }
+.btn:hover { filter: brightness(1.05); }
+
+/* ---------------------------------------------------------------- layout */
+main {
+  flex: 1; padding: 14px 18px 18px;
+  display: grid; gap: 12px;
+  grid-template-columns: repeat(12, minmax(0, 1fr));
+  grid-auto-rows: minmax(0, auto);
+  grid-template-areas:
+    "k1 k1 k2 k2 k3 k3 k4 k4 k5 k5 k6 k6"
+    "tr tr tr tr tr tr pw pw pw fe fe fe"
+    "mx mx mx mx hm hm hm hm vr vr vr vr"
+    "er er er er er br br lb lb lb lb lb"
+    "fd fd fd fd fd fd fd fd fd fd fd fd";
+}
+@media (max-width: 1400px) {
+  main { grid-template-areas:
+    "k1 k1 k1 k1 k2 k2 k2 k2 k3 k3 k3 k3"
+    "k4 k4 k4 k4 k5 k5 k5 k5 k6 k6 k6 k6"
+    "tr tr tr tr tr tr tr pw pw pw pw pw"
+    "fe fe fe fe fe fe hm hm hm hm hm hm"
+    "mx mx mx mx mx mx mx mx mx mx mx mx"
+    "vr vr vr vr vr vr br br br br br br"
+    "er er er er er er er er er er er er"
+    "lb lb lb lb lb lb lb lb lb lb lb lb"
+    "fd fd fd fd fd fd fd fd fd fd fd fd"; }
+}
+@media (max-width: 860px) {
+  main { grid-template-columns: 1fr 1fr; grid-template-areas:
+    "k1 k2" "k3 k4" "k5 k6" "tr tr" "pw pw" "fe fe" "hm hm" "mx mx" "vr vr" "br br" "er er" "lb lb" "fd fd"; }
+  header.top { height: auto; padding: 8px 12px; flex-wrap: wrap; }
+  header.top h1.title { flex-basis: 100%; order: 2; font-size: 15px; }
+  .filter-bar { position: static; }
+}
+.card {
+  background: var(--color-surface); border: 1px solid var(--color-border-soft);
+  border-radius: var(--r-card); box-shadow: var(--shadow-md);
+  display: flex; flex-direction: column; min-width: 0; min-height: 0; position: relative;
+  transition: box-shadow var(--tx) var(--ease);
+}
+.card:hover { box-shadow: var(--shadow-lg); }
+.card > h2 {
+  margin: 0; padding: 10px 12px 6px; font-size: 12.5px; font-weight: 600; letter-spacing: 0.01em;
+  display: flex; align-items: center; gap: 8px; color: var(--color-text);
+}
+.card > h2 { white-space: nowrap; }
+.card > h2 .sub { font-weight: 400; color: var(--color-text-mute); font-size: 11.5px; overflow: hidden; text-overflow: ellipsis; min-width: 0; flex: 1 1 auto; }
+.card > h2 .actions { margin-left: auto; flex: 0 0 auto; display: inline-flex; gap: 2px; opacity: 0; transition: opacity var(--tx) var(--ease); }
+.card:hover > h2 .actions, .card:focus-within > h2 .actions { opacity: 1; }
+.icon-btn {
+  border: 0; background: transparent; color: var(--color-text-mute); border-radius: 4px;
+  width: 24px; height: 24px; display: inline-grid; place-items: center; padding: 0;
+}
+.icon-btn:hover { background: var(--color-accent-soft); color: var(--color-text); }
+.icon-btn svg { width: 15px; height: 15px; stroke: currentColor; fill: none; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
+.card .body { flex: 1; min-height: 0; padding: 4px 12px 12px; position: relative; }
+.card .body.chart { height: 260px; }
+.card .body.tall { height: 320px; }
+.card canvas { width: 100% !important; height: 100% !important; }
+.card .empty {
+  position: absolute; inset: 0; display: grid; place-items: center; text-align: center;
+  color: var(--color-text-mute); font-size: 12px; padding: 20px; pointer-events: none;
+}
+.card .empty.good { color: var(--viz-good); font-weight: 500; }
+.card.fullscreen { position: fixed; inset: 12px; z-index: 50; box-shadow: var(--shadow-lg); }
+.card.fullscreen .body.chart, .card.fullscreen .body.tall { height: auto; }
+.card.loading::after {
+  content: ""; position: absolute; left: 0; right: 0; top: 0; height: 2px;
+  background: linear-gradient(90deg, transparent, var(--color-accent), transparent);
+  animation: sweep 1.1s infinite linear;
+}
+@keyframes sweep { from { transform: translateX(-100%);} to { transform: translateX(100%);} }
+.tbl-view { overflow: auto; height: 100%; }
+
+/* ---------------------------------------------------------------- KPI tiles */
+.kpi { padding: 10px 12px 12px; min-height: 92px; cursor: default; }
+.kpi h2 { padding: 0 0 4px; font-size: 11.5px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.06em; color: var(--color-text-mute); }
+.kpi .value { font-size: 30px; font-weight: 700; line-height: 1.05; letter-spacing: -0.01em; font-variant-numeric: tabular-nums; }
+.kpi .value.err { color: var(--viz-error); }
+.kpi .foot { display: flex; align-items: baseline; gap: 8px; margin-top: 6px; font-size: 11.5px; color: var(--color-text-mute); }
+.delta { font-weight: 600; font-variant-numeric: tabular-nums; display: inline-flex; align-items: center; gap: 2px; }
+.delta.up { color: var(--viz-good); }
+.delta.down { color: var(--viz-error); }
+.delta.flat { color: var(--color-text-mute); }
+.delta.inv.up { color: var(--viz-error); }
+.delta.inv.down { color: var(--viz-good); }
+.kpi.clickable { cursor: pointer; }
+.kpi.clickable:hover { border-color: var(--color-accent); }
+.card canvas.spark { position: absolute; right: 12px; top: 12px; width: 96px !important; height: 26px !important; opacity: 0.85; }
+
+/* ---------------------------------------------------------------- heatmaps */
+.heat { display: grid; gap: 2px; height: 100%; font-size: 10.5px; color: var(--color-text-mute); }
+.heat .cell { border-radius: 2px; background: var(--viz-heat-0); position: relative; min-width: 0; cursor: default; transition: transform var(--tx) var(--ease); }
+.heat .cell:hover { outline: 2px solid var(--color-accent); outline-offset: -1px; z-index: 2; }
+.heat .cell.clickable { cursor: pointer; }
+.heat .lbl { display: flex; align-items: center; justify-content: flex-end; padding-right: 6px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.heat .lbl.top { justify-content: center; align-items: flex-end; padding: 0 0 2px; }
+.heat .lbl.rot { writing-mode: vertical-rl; transform: rotate(180deg); justify-content: flex-start; padding: 0; align-items: center; font-size: 10px; display: block; text-align: left; line-height: 1; }
+.legend-ramp { display: flex; align-items: center; gap: 6px; font-size: 10.5px; color: var(--color-text-mute); margin-top: 6px; }
+.legend-ramp .ramp { flex: 0 0 120px; height: 8px; border-radius: 2px; background: linear-gradient(90deg, var(--viz-heat-0), var(--viz-heat-3), var(--viz-heat-6)); }
+
+/* ---------------------------------------------------------------- tables */
+table.data { width: 100%; border-collapse: collapse; font-size: 12px; }
+table.data th, table.data td { padding: 6px 7px; text-align: left; border-bottom: 1px solid var(--color-border-soft); white-space: nowrap; }
+table.data th { font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.05em; color: var(--color-text-mute); position: sticky; top: 0; background: var(--color-surface); z-index: 1; user-select: none; }
+table.data th.sortable { cursor: pointer; }
+table.data th.sortable:hover { color: var(--color-text); }
+table.data th .dir { font-size: 9px; margin-left: 3px; opacity: 0.8; }
+table.data td.num, table.data th.num { text-align: right; font-variant-numeric: tabular-nums; }
+table.data tr.clickable { cursor: pointer; }
+table.data tbody tr:hover { background: var(--color-accent-soft); }
+table.data td .bar { display: inline-block; height: 8px; border-radius: 2px; background: var(--viz-primary); vertical-align: middle; margin-right: 6px; min-width: 2px; }
+table.data td .bar.err { background: var(--viz-error); }
+.badge { display: inline-block; padding: 1px 7px; border-radius: 10px; font-size: 10.5px; font-weight: 600; line-height: 1.5; border: 1px solid transparent; }
+.badge.good { background: rgba(105,129,45,0.16); color: var(--viz-good); }
+.badge.warn { background: rgba(196,123,0,0.15); color: var(--viz-warn); }
+.badge.bad { background: var(--viz-error-soft); color: var(--viz-error); }
+.badge.mute { background: var(--color-surface-2); color: var(--color-text-mute); border-color: var(--color-border-soft); }
+.vchip { display: inline-block; font-family: var(--mono); font-size: 11px; padding: 1px 6px; border-radius: 3px; background: var(--color-surface-2); border: 1px solid var(--color-border-soft); margin: 1px 2px 1px 0; }
+.vchip.latest { border-color: var(--viz-good); }
+.vchip.old { border-color: var(--viz-warn); }
+.vchip small { color: var(--color-text-mute); margin-left: 4px; }
+.mono { font-family: var(--mono); font-size: 11.5px; }
+
+/* ---------------------------------------------------------------- error explorer */
+.errlist { display: flex; flex-direction: column; gap: 6px; overflow: auto; height: 100%; }
+.errgrp { border: 1px solid var(--color-border-soft); border-left: 3px solid var(--viz-error); border-radius: 4px; background: var(--color-surface-2); }
+.errgrp summary { list-style: none; cursor: pointer; padding: 8px 10px; display: grid; grid-template-columns: auto 1fr auto; gap: 10px; align-items: start; }
+.errgrp summary::-webkit-details-marker { display: none; }
+.errgrp .count { font-weight: 700; font-size: 16px; color: var(--viz-error); font-variant-numeric: tabular-nums; min-width: 34px; }
+.errgrp .msg { font-family: var(--mono); font-size: 11.5px; white-space: pre-wrap; word-break: break-word; color: var(--color-text); max-height: 3.6em; overflow: hidden; }
+.errgrp[open] .msg { max-height: none; }
+.errgrp .meta { font-size: 11px; color: var(--color-text-mute); margin-top: 3px; display: flex; flex-wrap: wrap; gap: 4px 10px; }
+.errgrp .meta b { color: var(--color-text-soft); font-weight: 600; }
+.errgrp .when { font-size: 11px; color: var(--color-text-mute); text-align: right; white-space: nowrap; }
+.errgrp .samples { padding: 0 10px 10px 54px; display: flex; flex-direction: column; gap: 8px; }
+.errgrp pre { margin: 0; font-family: var(--mono); font-size: 11px; white-space: pre-wrap; word-break: break-word; background: var(--color-surface); border: 1px solid var(--color-border-soft); border-radius: 3px; padding: 8px; max-height: 220px; overflow: auto; color: var(--color-text-soft); }
+.errgrp .sample-h { font-size: 11px; color: var(--color-text-mute); margin-bottom: 3px; }
+
+/* ---------------------------------------------------------------- feed */
+.feed { display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 6px; }
+.feed .ev { border: 1px solid var(--color-border-soft); border-radius: 4px; padding: 6px 9px; font-size: 11.5px; background: var(--color-surface-2); display: grid; grid-template-columns: 1fr auto; gap: 2px 8px; }
+.feed .ev .w { font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.feed .ev .a { color: var(--color-accent); font-family: var(--mono); font-size: 11px; }
+.feed .ev .a.err { color: var(--viz-error); }
+.feed .ev .t { color: var(--color-text-mute); font-size: 10.5px; text-align: right; }
+.feed .ev .d { grid-column: 1 / -1; color: var(--color-text-soft); font-size: 11px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.feed .ev.new { animation: flash 1.6s var(--ease); }
+@keyframes flash { from { background: var(--color-accent-soft); } to { background: var(--color-surface-2); } }
+
+/* ---------------------------------------------------------------- footer & misc */
+footer.bottom {
+  display: flex; align-items: center; gap: 16px; flex-wrap: wrap;
+  padding: 8px 18px; font-size: 11.5px; color: var(--color-text-mute);
+  background: var(--color-surface); border-top: 1px solid var(--color-border-soft);
+}
+footer.bottom .sep { opacity: 0.5; }
+footer.bottom a { color: var(--color-text-soft); text-decoration: none; }
+footer.bottom a:hover { color: var(--color-accent); text-decoration: underline; }
+.kbd-hint {
+  position: fixed; right: 18px; bottom: 50px; z-index: 60; width: 280px;
+  background: var(--color-surface); border: 1px solid var(--color-border); border-radius: 6px;
+  box-shadow: var(--shadow-lg); padding: 12px 14px; font-size: 12px;
+}
+.kbd-hint h4 { margin: 0 0 8px; font-size: 12px; }
+.kbd-hint div { display: flex; gap: 10px; padding: 2px 0; }
+.key { display: inline-block; min-width: 22px; text-align: center; font-family: var(--mono); font-size: 11px; border: 1px solid var(--color-border); border-bottom-width: 2px; border-radius: 3px; padding: 0 5px; background: var(--color-surface-2); }
+.toast { position: fixed; left: 50%; bottom: 60px; transform: translateX(-50%); z-index: 70; background: var(--tooltip-bg); color: var(--tooltip-text); padding: 8px 14px; border-radius: 4px; font-size: 12px; box-shadow: var(--shadow-lg); opacity: 0; transition: opacity var(--tx) var(--ease); pointer-events: none; }
+.toast.show { opacity: 1; }
+.viz-tip { position: fixed; z-index: 80; pointer-events: none; background: var(--tooltip-bg); color: var(--tooltip-text); padding: 6px 9px; border-radius: 4px; font-size: 11.5px; box-shadow: var(--shadow-lg); max-width: 320px; display: none; }
+.viz-tip b { font-weight: 600; }
+
+@media print {
+  header.top, .filter-bar, footer.bottom, .card > h2 .actions, .banner, .kbd-hint, .toast { display: none !important; }
+  body { background: #fff; }
+  main { display: block; }
+  .card { break-inside: avoid; margin-bottom: 10px; box-shadow: none; border: 1px solid #ccc; }
+  .card .body.chart, .card .body.tall { height: 240px; }
+}
+@media (prefers-reduced-motion: reduce) { *, *::before, *::after { animation: none !important; transition: none !important; } }
+</style>
+</head>
+<body>
+
+<header class="top" role="banner">
+  <a class="logo-link" id="logoLink" href="#" target="_blank" rel="noopener" hidden><img class="logo" id="logoImg" alt=""></a>
+  <h1 class="title">Widget Beacon <small id="orgLabel"></small></h1>
+  <div class="meta">
+    <span id="liveState"><span class="live-dot" id="liveDot"></span><span id="lastUpdated">Starting…</span></span>
+    <div class="seg" role="group" aria-label="Theme">
+      <button class="hbtn theme-btn" data-theme-pref="auto" title="Follow the operating system theme">Auto</button>
+      <button class="hbtn theme-btn" data-theme-pref="light" title="Light theme">Light</button>
+      <button class="hbtn theme-btn" data-theme-pref="dark" title="Dark theme">Dark</button>
+    </div>
+    <button class="hbtn" id="liveBtn" aria-pressed="false" title="Refresh every 60 seconds instead of every 5 minutes (L)">Live</button>
+    <button class="hbtn" id="refreshBtn" title="Refresh now (R)">Refresh</button>
+    <button class="hbtn" id="helpBtn" title="Keyboard shortcuts (?)" aria-label="Keyboard shortcuts">?</button>
+  </div>
+</header>
+
+<div id="banner" class="banner" role="status" aria-live="polite">Loading the ArcGIS Maps SDK and signing in to the portal…</div>
+
+<div class="filter-bar" id="filterBar" role="region" aria-label="Filters and time range">
+  <span class="label">Period</span>
+  <span class="chips" id="timeChips" role="group" aria-label="Time range">
+    <button data-days="1" title="Last 24 hours (1)">24h</button>
+    <button data-days="7" title="Last 7 days (2)">7d</button>
+    <button data-days="30" class="active" aria-pressed="true" title="Last 30 days (3)">30d</button>
+    <button data-days="90" title="Last 90 days (4)">90d</button>
+    <button data-days="ytd" title="Year to date (5)">YTD</button>
+    <button data-days="all" title="Everything in the table (6)">All</button>
+    <button id="customDateBtn" title="Pick a custom range" aria-haspopup="dialog" aria-expanded="false">Custom…</button>
+  </span>
+  <label class="toggle" title="Hide Esri's layout and plumbing widgets (text, map, controller...) so only real tools rank">
+    <input type="checkbox" id="customOnly"> Custom widgets only
+  </label>
+  <span class="label">Filters</span>
+  <span class="chips" id="activeFilters"><span class="hint" id="filterHint">Click a bar, cell or row to filter everything</span></span>
+  <span class="spacer"></span>
+  <button class="linkish" id="clearFilters" hidden>Clear filters (Esc)</button>
+  <button class="linkish" id="copyLink" title="Copy a link to this exact view">Copy link</button>
+
+  <div class="date-popover" id="datePopover" role="dialog" aria-label="Custom date range" hidden>
+    <div class="row"><label for="dateFrom">From</label><input type="date" id="dateFrom"></div>
+    <div class="row"><label for="dateTo">To</label><input type="date" id="dateTo"></div>
+    <div class="actions">
+      <button class="btn" id="dateCancel">Cancel</button>
+      <button class="btn primary" id="dateApply">Apply</button>
+    </div>
+  </div>
+</div>
+
+<main id="main" aria-label="Dashboard">
+
+  <section class="card kpi" style="grid-area:k1" id="kpiEvents">
+    <h2>Events</h2>
+    <div class="value" data-v>–</div>
+    <div class="foot"><span class="delta" data-d></span><span data-c>vs previous period</span></div>
+    <canvas class="spark" data-spark aria-hidden="true"></canvas>
+  </section>
+  <section class="card kpi" style="grid-area:k2" id="kpiSessions">
+    <h2>Sessions <span class="sub" title="Distinct page loads that reported at least one event">page loads</span></h2>
+    <div class="value" data-v>–</div>
+    <div class="foot"><span class="delta" data-d></span><span data-c>vs previous period</span></div>
+  </section>
+  <section class="card kpi" style="grid-area:k3" id="kpiWidgets">
+    <h2>Active widgets</h2>
+    <div class="value" data-v>–</div>
+    <div class="foot"><span data-c>reporting in this period</span></div>
+  </section>
+  <section class="card kpi" style="grid-area:k4" id="kpiApps">
+    <h2>Apps</h2>
+    <div class="value" data-v>–</div>
+    <div class="foot"><span data-c>reporting in this period</span></div>
+  </section>
+  <section class="card kpi clickable" style="grid-area:k5" id="kpiErrors" role="button" tabindex="0" aria-label="Errors. Click to filter to errors only">
+    <h2>Errors</h2>
+    <div class="value err" data-v>–</div>
+    <div class="foot"><span class="delta inv" data-d></span><span data-c>vs previous period</span></div>
+    <canvas class="spark" data-spark aria-hidden="true"></canvas>
+  </section>
+  <section class="card kpi" style="grid-area:k6" id="kpiRate">
+    <h2>Error rate</h2>
+    <div class="value" data-v>–</div>
+    <div class="foot"><span class="delta inv" data-d></span><span data-c>errors per 1,000 events</span></div>
+  </section>
+
+  <section class="card" style="grid-area:tr" id="cardTrend">
+    <h2>Activity
+      <span class="chips" role="group" aria-label="Series" id="trendMode">
+        <button data-mode="events" class="active" aria-pressed="true">Events</button>
+        <button data-mode="errors">Errors</button>
+      </span>
+      <span class="sub" id="trendSub">per day</span>
+      <span class="actions"></span>
+    </h2>
+    <div class="body chart"><canvas id="chTrend" role="img" aria-label="Events per day"></canvas></div>
+  </section>
+
+  <section class="card" style="grid-area:pw" id="cardPopular">
+    <h2>Most used widgets <span class="sub">events, top 15</span><span class="actions"></span></h2>
+    <div class="body chart"><canvas id="chPopular" role="img" aria-label="Most used widgets"></canvas></div>
+  </section>
+
+  <section class="card" style="grid-area:fe" id="cardFeatures">
+    <h2>Features used <span class="sub">actions other than open and loaded</span><span class="actions"></span></h2>
+    <div class="body chart"><canvas id="chFeatures" role="img" aria-label="Features used"></canvas></div>
+  </section>
+
+  <section class="card" style="grid-area:mx" id="cardMatrix">
+    <h2>Adoption <span class="sub">events per widget in each app; click a cell to filter</span><span class="actions"></span></h2>
+    <div class="body tall"><div id="matrix" class="heat" role="table" aria-label="Widgets by app"></div></div>
+  </section>
+
+  <section class="card" style="grid-area:hm" id="cardHours">
+    <h2>When people work <span class="sub" id="hoursSub">events by weekday and hour, local time</span><span class="actions"></span></h2>
+    <div class="body tall"><div id="hours" class="heat" role="table" aria-label="Events by weekday and hour"></div></div>
+  </section>
+
+  <section class="card" style="grid-area:vr" id="cardVersions">
+    <h2>Versions in the field <span class="sub" id="versionsSub">vs latest GitHub release</span><span class="actions"></span></h2>
+    <div class="body tall tbl-view"><table class="data" id="tblVersions"><thead><tr><th>Widget</th><th>Deployed</th><th>Latest</th><th>Status</th></tr></thead><tbody></tbody></table></div>
+  </section>
+
+  <section class="card" style="grid-area:er" id="cardErrors">
+    <h2>Error explorer <span class="sub" id="errorsSub">grouped by message; newest first</span><span class="actions"></span></h2>
+    <div class="body tall"><div id="errlist" class="errlist"></div></div>
+  </section>
+
+  <section class="card" style="grid-area:br" id="cardBrowsers">
+    <h2>Browsers<span class="actions"></span></h2>
+    <div class="body chart"><canvas id="chBrowsers" role="img" aria-label="Browsers"></canvas></div>
+  </section>
+
+  <section class="card" style="grid-area:lb" id="cardLeaderboard">
+    <h2>Widget health <span class="sub">custom widgets; click a header to sort</span><span class="actions"></span></h2>
+    <div class="body tall tbl-view"><table class="data" id="tblHealth"><thead></thead><tbody></tbody></table></div>
+  </section>
+
+  <section class="card" style="grid-area:fd" id="cardFeed">
+    <h2>Latest events <span class="sub" id="feedSub">newest 24, unfiltered by period</span><span class="actions"></span></h2>
+    <div class="body"><div id="feed" class="feed"></div></div>
+  </section>
+
+</main>
+
+<footer class="bottom" role="contentinfo">
+  <span id="footNote">Internal use</span>
+  <span class="sep" aria-hidden="true">·</span>
+  <span id="refreshNote">Refreshes every 5 minutes</span>
+  <span class="sep" aria-hidden="true">·</span>
+  <span id="tzNote"></span>
+  <span class="spacer" style="flex:1"></span>
+  <a id="lnkView" href="#" target="_blank" rel="noopener">Data (portal item)</a>
+  <a id="lnkEsriDash" href="#" target="_blank" rel="noopener" hidden>ArcGIS Dashboards version</a>
+  <a id="lnkRepo" href="#" target="_blank" rel="noopener">Widget Beacon on GitHub</a>
+</footer>
+
+<div class="kbd-hint" id="kbdHint" role="dialog" aria-label="Keyboard shortcuts" hidden>
+  <h4>Keyboard shortcuts</h4>
+  <div><span class="key">1</span>–<span class="key">6</span> Period: 24h, 7d, 30d, 90d, YTD, All</div>
+  <div><span class="key">C</span> Toggle custom widgets only</div>
+  <div><span class="key">E</span> Filter to errors</div>
+  <div><span class="key">L</span> Live mode (60 second refresh)</div>
+  <div><span class="key">R</span> Refresh now</div>
+  <div><span class="key">T</span> Cycle theme</div>
+  <div><span class="key">F</span> Fullscreen the hovered card</div>
+  <div><span class="key">Esc</span> Clear filters / close</div>
+  <div><span class="key">?</span> This help</div>
+</div>
+<div class="toast" id="toast" role="status" aria-live="polite"></div>
+<div class="viz-tip" id="vizTip"></div>
+
+<script>
+/* ============================================================================
+   Widget Beacon Dashboard
+   A standalone page that reads the Beacon view (the query only view that
+   setup/beacon_sink_setup.py creates) and shows what ArcGIS Dashboards cannot:
+   sessions, adoption by app, hour of day patterns, grouped error signatures,
+   and deployed versions against the latest GitHub release.
+
+   Host it on any static web server (IIS, nginx, GitHub Pages behind your VPN).
+   Everything is computed from a dozen small statistics queries against the
+   view; no server side code, no build step, no data leaves your portal.
+
+   Changelog
+     2026-09-18  1.0.0  First version.
+   ========================================================================== */
+
+//================================================================
+//  CONFIG  (the only block you should need to edit)
+//================================================================
+const CONFIG = {
+  // Portal that owns the beacon view. The page signs in here.
+  portalUrl: "https://portal.example.org/portal",
+
+  // How to find the view. Give viewUrl (the FeatureServer/0 endpoint) or leave it
+  // empty and the page searches the portal for the item by title.
+  viewUrl: "",
+  viewTitle: "exb_widget_beacon_view",
+
+  // OAuth application registered on the portal (Content > New item > Application).
+  // Redirect URI must be <where this page lives>/oauth-callback.html. Leave empty
+  // and the ArcGIS SDK falls back to its own sign in dialog.
+  oauthAppId: "",
+  oauthCallbackPath: "oauth-callback.html",
+
+  // Shown in the header and footer.
+  orgLabel: "",
+  logoDataUri: "",             // optional <img src>, for a small logo left of the title
+  logoLink: "",
+  footNote: "Internal use",
+  esriDashboardUrl: "",        // optional link to the ArcGIS Dashboards version
+  repoUrl: "https://github.com/brianmcleer/exb-widget-beacon",
+
+  // Your custom widgets, by manifest name. Drives the health table, the versions
+  // table and the "custom widgets only" toggle.
+  customWidgets: ["my-widget", "other-widget"],
+
+  // Esri layout and plumbing widgets that every app has. Excluded from the
+  // popularity ranking so real tools rank.
+  plumbing: ["text", "image", "arcgis-map", "controller", "sidebar", "fixed", "navigator", "button", "card",
+             "divider", "menu", "section", "views-navigation", "grid", "row", "column", "branding"],
+
+  // Actions that are lifecycle, not features.
+  lifecycle: ["open", "loaded", "error"],
+
+  // GitHub, for "latest release" in the versions table. owner + a repo per widget.
+  // Widgets missing from repoFor use `${name}-widget`. Set owner to "" to disable.
+  github: {
+    owner: "",
+    repoFor: { },
+  },
+
+  refreshMs: 5 * 60 * 1000,
+  liveRefreshMs: 60 * 1000,
+  feedCount: 24,
+  errorSampleCount: 2000,
+};
+
+//================================================================
+//  State
+//================================================================
+const state = {
+  period: { kind: "days", days: 30, from: null, to: null },  // kind: days | ytd | all | custom
+  filters: { widget: null, app: null, action: null, browser: null, version: null },
+  customOnly: false,
+  trendMode: "events",
+  live: false,
+  layerUrl: null,
+  oidField: "OBJECTID",
+  maxRecords: 2000,
+  sqlExpr: true,               // flips to false if the service rejects EXTRACT() in groupBy
+  timer: null,
+  refreshing: false,
+  lastFeedOid: 0,
+  charts: {},
+  data: {},
+  gh: {},
+};
+
+let esriRequest, esriId;
+
+//================================================================
+//  Small utilities
+//================================================================
+const $ = (sel, root = document) => root.querySelector(sel);
+const $$ = (sel, root = document) => Array.from(root.querySelectorAll(sel));
+const nf = new Intl.NumberFormat(undefined);
+const fmt = (n) => (n == null || isNaN(n)) ? "–" : nf.format(Math.round(n));
+const fmt1 = (n) => (n == null || isNaN(n)) ? "–" : n.toLocaleString(undefined, { maximumFractionDigits: 1 });
+const esc = (s) => String(s == null ? "" : s).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+const sqlStr = (s) => "'" + String(s).replace(/'/g, "''") + "'";
+const cssVar = (name) => getComputedStyle(document.documentElement).getPropertyValue(name).trim();
+const pad2 = (n) => String(n).padStart(2, "0");
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+const dtf = new Intl.DateTimeFormat(undefined, { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" });
+const dtfDay = new Intl.DateTimeFormat(undefined, { month: "short", day: "numeric" });
+const dtfFull = new Intl.DateTimeFormat(undefined, { year: "numeric", month: "short", day: "numeric", hour: "2-digit", minute: "2-digit", second: "2-digit" });
+
+function ago(ms) {
+  const s = Math.max(0, (Date.now() - ms) / 1000);
+  if (s < 60) return "just now";
+  if (s < 3600) return Math.floor(s / 60) + " min ago";
+  if (s < 86400) return Math.floor(s / 3600) + " h ago";
+  return Math.floor(s / 86400) + " d ago";
+}
+function sqlTs(d) {   // UTC timestamp literal the feature service understands
+  return `timestamp '${d.getUTCFullYear()}-${pad2(d.getUTCMonth() + 1)}-${pad2(d.getUTCDate())} ${pad2(d.getUTCHours())}:${pad2(d.getUTCMinutes())}:${pad2(d.getUTCSeconds())}'`;
+}
+let toastTimer;
+function toast(msg) {
+  const t = $("#toast"); t.textContent = msg; t.classList.add("show");
+  clearTimeout(toastTimer); toastTimer = setTimeout(() => t.classList.remove("show"), 2200);
+}
+function banner(msg, kind) {
+  const b = $("#banner");
+  if (!msg) { b.hidden = true; return; }
+  b.hidden = false; b.className = "banner" + (kind ? " " + kind : ""); b.innerHTML = msg;
+}
+const tip = $("#vizTip");
+function showTip(html, x, y) {
+  tip.innerHTML = html; tip.style.display = "block";
+  const w = tip.offsetWidth, h = tip.offsetHeight;
+  tip.style.left = Math.min(x + 12, window.innerWidth - w - 8) + "px";
+  tip.style.top = (y + 16 + h > window.innerHeight ? y - h - 8 : y + 16) + "px";
+}
+function hideTip() { tip.style.display = "none"; }
+
+// Version compare, "1.2.10" > "1.2.9". Anything non numeric compares as text at that spot.
+function cmpVer(a, b) {
+  const pa = String(a).replace(/^v/i, "").split(/[.\-+]/), pb = String(b).replace(/^v/i, "").split(/[.\-+]/);
+  for (let i = 0; i < Math.max(pa.length, pb.length); i++) {
+    const x = pa[i] ?? "0", y = pb[i] ?? "0";
+    const nx = Number(x), ny = Number(y);
+    if (!isNaN(nx) && !isNaN(ny)) { if (nx !== ny) return nx - ny; }
+    else if (x !== y) return x < y ? -1 : 1;
+  }
+  return 0;
+}
+
+//================================================================
+//  Theme
+//================================================================
+function applyTheme(pref) {
+  try { localStorage.setItem("wb.theme", pref); } catch (e) {}
+  const dark = pref === "dark" || (pref === "auto" && matchMedia("(prefers-color-scheme: dark)").matches);
+  document.documentElement.setAttribute("data-theme", dark ? "dark" : "light");
+  document.documentElement.setAttribute("data-theme-pref", pref);
+  $$(".theme-btn").forEach((b) => b.setAttribute("aria-pressed", String(b.dataset.themePref === pref)));
+  if (Object.keys(state.data).length) renderAll();   // recolor charts
+}
+matchMedia("(prefers-color-scheme: dark)").addEventListener("change", () => {
+  if (document.documentElement.getAttribute("data-theme-pref") === "auto") applyTheme("auto");
+});
+
+//================================================================
+//  Period and where clauses
+//================================================================
+function periodRange() {
+  const now = new Date();
+  const p = state.period;
+  if (p.kind === "all") return { from: null, to: null, label: "all time" };
+  if (p.kind === "ytd") return { from: new Date(now.getFullYear(), 0, 1), to: null, label: "year to date" };
+  if (p.kind === "custom") {
+    const to = p.to ? new Date(p.to.getTime() + 86400000) : null;
+    return { from: p.from, to, label: `${dtfDay.format(p.from)} to ${dtfDay.format(p.to)}` };
+  }
+  return { from: new Date(now.getTime() - p.days * 86400000), to: null, label: p.days === 1 ? "last 24 hours" : `last ${p.days} days` };
+}
+function previousRange(r) {
+  if (!r.from) return null;
+  const end = r.to || new Date();
+  const len = end.getTime() - r.from.getTime();
+  return { from: new Date(r.from.getTime() - len), to: r.from };
+}
+function rangeWhere(r) {
+  const parts = [];
+  if (r && r.from) parts.push(`occurred_at >= ${sqlTs(r.from)}`);
+  if (r && r.to) parts.push(`occurred_at < ${sqlTs(r.to)}`);
+  return parts;
+}
+function filterWhere(opts = {}) {
+  const f = state.filters, parts = [];
+  if (f.widget && !opts.ignoreWidget) parts.push(`widget_name = ${sqlStr(f.widget)}`);
+  if (f.version && !opts.ignoreWidget) parts.push(`widget_version = ${sqlStr(f.version)}`);
+  if (f.app && !opts.ignoreApp) parts.push(`app_name = ${sqlStr(f.app)}`);
+  if (f.action && !opts.ignoreAction) parts.push(`action = ${sqlStr(f.action)}`);
+  if (f.browser && !opts.ignoreBrowser) parts.push(`browser = ${sqlStr(f.browser)}`);
+  if (state.customOnly && !opts.ignoreCustom && CONFIG.customWidgets.length) parts.push(`widget_name IN (${CONFIG.customWidgets.map(sqlStr).join(",")})`);
+  return parts;
+}
+function where(range, extra = [], opts = {}) {
+  const parts = [...rangeWhere(range), ...filterWhere(opts), ...extra];
+  return parts.length ? parts.join(" AND ") : "1=1";
+}
+const NOT_PLUMBING = () => `widget_name NOT IN (${CONFIG.plumbing.map(sqlStr).join(",")})`;
+const NOT_LIFECYCLE = () => `action NOT IN (${CONFIG.lifecycle.map(sqlStr).join(",")})`;
+const ONLY_CUSTOM = () => `widget_name IN (${CONFIG.customWidgets.map(sqlStr).join(",")})`;
+
+//================================================================
+//  Query layer. All reads go through esri/request so IdentityManager adds tokens.
+//================================================================
+async function q(params) {
+  const r = await esriRequest(state.layerUrl + "/query", {
+    method: "post", responseType: "json",
+    query: Object.assign({ f: "json", returnGeometry: false }, params),
+  });
+  if (r.data && r.data.error) throw new Error(r.data.error.message || JSON.stringify(r.data.error));
+  return r.data;
+}
+async function count(whereClause) {
+  const d = await q({ where: whereClause, returnCountOnly: true });
+  return d.count || 0;
+}
+/** Group by one or more fields (or SQL expressions) with a count and optional extra
+ *  statistics. Follows the transfer limit so big group sets come back whole. Returns rows
+ *  as plain objects with keys = the group field names in order, plus n and any extras. */
+async function agg(whereClause, groupBy, opts = {}) {
+  const stats = [{ statisticType: "count", onStatisticField: state.oidField, outStatisticFieldName: "n" }, ...(opts.stats || [])];
+  const rows = [];
+  let offset = 0;
+  const pageSize = Math.min(state.maxRecords, 2000);
+  for (let page = 0; page < (opts.maxPages || 30); page++) {
+    const params = {
+      where: whereClause,
+      outStatistics: JSON.stringify(stats),
+      groupByFieldsForStatistics: groupBy.join(","),
+      orderByFields: opts.orderBy || "n DESC",
+      resultOffset: offset,
+      resultRecordCount: opts.num ? Math.min(opts.num - rows.length, pageSize) : pageSize,
+    };
+    const d = await q(params);
+    const fields = (d.fields || []).map((f) => f.name);
+    // Group keys come back under whatever name the service gives an expression, so map by position.
+    const statNames = new Set(stats.map((s) => s.outStatisticFieldName));
+    const keyFields = fields.filter((f) => !statNames.has(f));
+    for (const f of d.features || []) {
+      const a = f.attributes, row = {};
+      groupBy.forEach((g, i) => { row[opts.keys ? opts.keys[i] : g] = a[keyFields[i]]; });
+      for (const s of stats) row[s.outStatisticFieldName] = a[s.outStatisticFieldName];
+      rows.push(row);
+    }
+    if (!d.exceededTransferLimit || (opts.num && rows.length >= opts.num) || !(d.features || []).length) break;
+    offset += d.features.length;
+  }
+  return rows;
+}
+async function features(whereClause, outFields, orderBy, num) {
+  const d = await q({ where: whereClause, outFields: outFields.join(","), orderByFields: orderBy, resultRecordCount: num });
+  return (d.features || []).map((f) => f.attributes);
+}
+
+//================================================================
+//  Boot: SDK, sign in, find the view
+//================================================================
+require(["esri/config", "esri/request", "esri/identity/IdentityManager", "esri/identity/OAuthInfo"],
+  function (esriConfig, request, IdentityManager, OAuthInfo) {
+    esriRequest = request; esriId = IdentityManager;
+    esriConfig.portalUrl = CONFIG.portalUrl;
+    if (CONFIG.oauthAppId) {
+      const callbackUrl = new URL(CONFIG.oauthCallbackPath, location.href).href;
+      esriId.registerOAuthInfos([new OAuthInfo({ appId: CONFIG.oauthAppId, portalUrl: CONFIG.portalUrl, popup: true, popupCallbackUrl: callbackUrl, expiration: 60 * 8 })]);
+    }
+    // The view lives on a federated hosting server; tell IdentityManager which token service covers it.
+    if (CONFIG.viewUrl) {
+      const serverRoot = CONFIG.viewUrl.replace(/\/rest\/services\/.*$/, "");
+      esriId.registerServers([{ server: serverRoot, tokenServiceUrl: CONFIG.portalUrl.replace(/\/$/, "") + "/sharing/rest/generateToken" }]);
+    }
+    boot().catch((e) => { console.error(e); banner("Could not start: " + esc(e.message || e), "err"); setLive("err"); });
+  });
+
+async function boot() {
+  // The SDK can be ready before the rest of this page has parsed.
+  if (document.readyState === "loading") await new Promise((r) => document.addEventListener("DOMContentLoaded", r, { once: true }));
+  wireUi();
+  readHash();
+  applyTheme(document.documentElement.getAttribute("data-theme-pref") || "auto");
+  // Branding
+  if (CONFIG.logoDataUri) { $("#logoImg").src = CONFIG.logoDataUri; $("#logoImg").alt = CONFIG.orgLabel || "Logo"; $("#logoLink").href = CONFIG.logoLink || "#"; $("#logoLink").hidden = false; }
+  $("#orgLabel").textContent = CONFIG.orgLabel || "";
+  $("#footNote").textContent = CONFIG.footNote || "";
+  $("#lnkRepo").href = CONFIG.repoUrl;
+  if (CONFIG.esriDashboardUrl) { $("#lnkEsriDash").href = CONFIG.esriDashboardUrl; $("#lnkEsriDash").hidden = false; }
+  $("#tzNote").textContent = "Times shown in " + (Intl.DateTimeFormat().resolvedOptions().timeZone || "local time");
+
+  // Sign in happens on demand: the first secured request makes IdentityManager open the portal
+  // sign in (a popup with an OAuth app id, its own dialog without one), same as the Report a
+  // Concern dashboard. If the browser blocks the popup, a button offers a retry.
+  banner("Signing in to the portal and finding the beacon view…");
+  if (CONFIG.oauthAppId) {
+    const sharing = CONFIG.portalUrl.replace(/\/$/, "") + "/sharing";
+    try { await esriId.getCredential(sharing); }
+    catch (e) {
+      banner('The sign in window did not open (popup blocked?). <button class="btn primary" id="signInBtn">Sign in</button>', "warn");
+      await new Promise((resolve) => { $("#signInBtn").onclick = async () => { try { await esriId.getCredential(sharing); resolve(); } catch (err) { banner("Sign in failed: " + esc(err.message || err), "err"); } }; });
+    }
+  }
+  state.layerUrl = await resolveView();
+  const meta = (await esriRequest(state.layerUrl, { query: { f: "json" }, responseType: "json" })).data;
+  if (meta.error) throw new Error(meta.error.message);
+  state.oidField = meta.objectIdField || "OBJECTID";
+  state.maxRecords = meta.maxRecordCount || 2000;
+  state.sqlExpr = !!(meta.advancedQueryCapabilities && meta.advancedQueryCapabilities.supportsSqlExpression);
+  $("#lnkView").href = state.viewItemUrl || state.layerUrl;
+  banner(null);
+  await refreshAll();
+  scheduleRefresh();
+  loadGithubLatest();
+  document.addEventListener("visibilitychange", () => { if (!document.hidden && Date.now() - (state.lastRefresh || 0) > 60000) refreshAll(); });
+}
+
+async function resolveView() {
+  if (CONFIG.viewUrl) return CONFIG.viewUrl.replace(/\/$/, "");
+  const url = CONFIG.portalUrl.replace(/\/$/, "") + "/sharing/rest/search";
+  const r = await esriRequest(url, { query: { f: "json", num: 20, q: `title:"${CONFIG.viewTitle}" AND type:"Feature Service"` }, responseType: "json" });
+  const hit = (r.data.results || []).find((i) => i.title === CONFIG.viewTitle) || (r.data.results || [])[0];
+  if (!hit) throw new Error(`No item titled "${CONFIG.viewTitle}" on ${CONFIG.portalUrl}. Run beacon_sink_setup.py create, or set CONFIG.viewUrl.`);
+  state.viewItemUrl = CONFIG.portalUrl.replace(/\/$/, "") + "/home/item.html?id=" + hit.id;
+  return hit.url.replace(/\/$/, "") + "/0";
+}
+
+//================================================================
+//  Load everything for the current period and filters
+//================================================================
+async function refreshAll() {
+  if (state.refreshing || !state.layerUrl) return;
+  state.refreshing = true;
+  $$(".card").forEach((c) => c.classList.add("loading"));
+  setLive("loading");
+  const range = periodRange(), prev = previousRange(range);
+  const W = where(range);
+  const Werr = where(range, ["action = 'error'"]);
+  try {
+    const tasks = {
+      total: count(W),
+      errors: count(Werr),
+      prevTotal: prev ? count(where(prev)) : Promise.resolve(null),
+      prevErrors: prev ? count(where(prev, ["action = 'error'"])) : Promise.resolve(null),
+      byWidget: agg(where(range, [NOT_PLUMBING()], { ignoreWidget: true }), ["widget_name"], { num: 400 }),
+      byWidgetAll: agg(W, ["widget_name"], { num: 400 }),
+      byAction: agg(where(range, [NOT_LIFECYCLE()], { ignoreAction: true }), ["action"], { num: 60 }),
+      byApp: agg(where(range, [], { ignoreApp: true }), ["app_name"], { num: 100 }),
+      byBrowser: agg(where(range, [], { ignoreBrowser: true }), ["browser"], { num: 20 }),
+      byVersion: agg(where(range, [ONLY_CUSTOM()]), ["widget_name", "widget_version"], { num: 500, orderBy: "widget_name ASC, widget_version ASC" }),
+      matrix: agg(where(range, [NOT_PLUMBING()], { ignoreApp: true, ignoreWidget: true }), ["app_name", "widget_name"], { num: 3000, orderBy: "app_name ASC" }),
+      errByWidget: agg(Werr, ["widget_name"], { num: 200 }),
+      sessions: agg(W, ["session_id"], { maxPages: 25, orderBy: "n DESC",
+        stats: [{ statisticType: "min", onStatisticField: "occurred_at", outStatisticFieldName: "t0" }, { statisticType: "max", onStatisticField: "occurred_at", outStatisticFieldName: "t1" }] }),
+      prevSessions: prev ? agg(where(prev), ["session_id"], { maxPages: 25 }) : Promise.resolve(null),
+      errorRows: features(Werr, ["widget_name", "widget_version", "app_name", "browser", "error_text", "detail", "occurred_at", state.oidField], "occurred_at DESC", CONFIG.errorSampleCount),
+      feed: features(where(null), ["widget_name", "widget_version", "app_name", "browser", "action", "detail", "occurred_at", state.oidField], "occurred_at DESC", CONFIG.feedCount),
+      trend: loadTrend(range),
+    };
+    const keys = Object.keys(tasks);
+    const results = await Promise.allSettled(keys.map((k) => tasks[k]));
+    const d = {};
+    const failures = [];
+    keys.forEach((k, i) => { if (results[i].status === "fulfilled") d[k] = results[i].value; else { d[k] = null; failures.push(k + ": " + (results[i].reason && results[i].reason.message || results[i].reason)); console.warn("query failed", k, results[i].reason); } });
+    d.range = range; d.prev = prev;
+    state.data = d;
+    state.lastRefresh = Date.now();
+    renderAll();
+    if (failures.length) banner("Some panels could not load: " + esc(failures.join("; ")), "warn"); else banner(null);
+    setLive(failures.length ? "stale" : "ok");
+  } catch (e) {
+    console.error(e); banner("Refresh failed: " + esc(e.message || e), "err"); setLive("err");
+  } finally {
+    state.refreshing = false;
+    $$(".card").forEach((c) => c.classList.remove("loading"));
+  }
+}
+
+/** Events (and errors) binned in time. Uses EXTRACT() in the group by when the service
+ *  supports SQL expressions, which lets the browser rebucket UTC hours into local days.
+ *  Falls back to one count query per bin. */
+async function loadTrend(range) {
+  const from = range.from ? range.from.getTime() : null;
+  const to = (range.to || new Date()).getTime();
+  let start = from;
+  if (start == null) {   // all time: find the first row
+    const first = await features("1=1", ["occurred_at"], "occurred_at ASC", 1);
+    start = first.length ? first[0].occurred_at : to - 86400000;
+  }
+  const spanDays = (to - start) / 86400000;
+  const useHours = spanDays <= 120;
+  const Wev = where(range), Werr = where(range, ["action = 'error'"]);
+
+  if (state.sqlExpr) {
+    try {
+      const gb = ["EXTRACT(YEAR FROM occurred_at)", "EXTRACT(MONTH FROM occurred_at)", "EXTRACT(DAY FROM occurred_at)"].concat(useHours ? ["EXTRACT(HOUR FROM occurred_at)"] : []);
+      const keys = ["y", "m", "d"].concat(useHours ? ["h"] : []);
+      const [ev, er] = await Promise.all([
+        agg(Wev, gb, { keys, orderBy: gb.join(","), maxPages: 12 }),
+        agg(Werr, gb, { keys, orderBy: gb.join(","), maxPages: 12 }),
+      ]);
+      const toMs = (r) => Date.UTC(r.y, r.m - 1, r.d, useHours ? r.h : 0);
+      return { mode: useHours ? "hours" : "days", start, to, events: ev.map((r) => ({ t: toMs(r), n: r.n })), errors: er.map((r) => ({ t: toMs(r), n: r.n })), local: useHours };
+    } catch (e) {
+      console.warn("SQL expression group by rejected, falling back to binned counts", e);
+      state.sqlExpr = false;
+    }
+  }
+  // Fallback: one count per bin, capped near 60 requests per series.
+  const binMs = spanDays <= 2 ? 3600000 : spanDays <= 62 ? 86400000 : spanDays <= 400 ? 7 * 86400000 : 30 * 86400000;
+  const bins = [];
+  for (let t = Math.floor(start / binMs) * binMs; t < to; t += binMs) bins.push(t);
+  async function series(base) {
+    const out = [];
+    for (let i = 0; i < bins.length; i += 8) {
+      const chunk = bins.slice(i, i + 8);
+      const ns = await Promise.all(chunk.map((t) => count(`${base} AND occurred_at >= ${sqlTs(new Date(t))} AND occurred_at < ${sqlTs(new Date(t + binMs))}`)));
+      chunk.forEach((t, j) => out.push({ t, n: ns[j] }));
+    }
+    return out;
+  }
+  const [ev, er] = await Promise.all([series(Wev), series(Werr)]);
+  return { mode: "bins", binMs, start, to, events: ev, errors: er, local: false };
+}
+
+function setLive(kind) {
+  const dot = $("#liveDot"), lu = $("#lastUpdated");
+  dot.className = "live-dot" + (kind === "ok" ? (state.live ? " pulse" : "") : kind === "loading" ? " pulse" : kind === "stale" ? " stale" : kind === "err" ? " err" : "");
+  if (kind === "loading") lu.textContent = "Refreshing…";
+  else if (state.lastRefresh) lu.textContent = "Updated " + new Date(state.lastRefresh).toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit" });
+}
+function scheduleRefresh() {
+  clearInterval(state.timer);
+  state.timer = setInterval(() => { if (!document.hidden) refreshAll(); }, state.live ? CONFIG.liveRefreshMs : CONFIG.refreshMs);
+  $("#refreshNote").textContent = state.live ? "Live: refreshes every minute" : "Refreshes every " + Math.round(CONFIG.refreshMs / 60000) + " minutes";
+}
+
+//================================================================
+//  GitHub latest release per custom widget (cached for a day)
+//================================================================
+async function loadGithubLatest() {
+  const gh = CONFIG.github;
+  if (!gh || !gh.owner) return;
+  const now = Date.now();
+  const jobs = CONFIG.customWidgets.map(async (w) => {
+    const repo = w in gh.repoFor ? gh.repoFor[w] : `${w}-widget`;
+    if (!repo) return;   // widget that is not on GitHub
+    const key = "wb.gh." + repo;
+    try { const c = JSON.parse(localStorage.getItem(key) || "null"); if (c && now - c.t < 86400000) { state.gh[w] = c.tag; return; } } catch (e) {}
+    try {
+      const r = await fetch(`https://api.github.com/repos/${gh.owner}/${repo}/releases/latest`, { headers: { Accept: "application/vnd.github+json" } });
+      if (r.status === 403) return;   // rate limited; try again next load
+      const tag = r.ok ? ((await r.json()).tag_name || "").replace(/^v/i, "") : "";
+      state.gh[w] = tag || "none";
+      try { localStorage.setItem(key, JSON.stringify({ tag: state.gh[w], t: now })); } catch (e) {}
+    } catch (e) { /* offline or blocked; leave unknown */ }
+  });
+  await Promise.allSettled(jobs);
+  if (state.data.byVersion) { renderVersions(); renderHealth(); }
+}
+</script>
+
+<script>
+//================================================================
+//  Rendering
+//================================================================
+function renderAll() {
+  const d = state.data; if (!d.range) return;
+  renderFilterChips();
+  renderKpis();
+  renderTrend();
+  renderPopular();
+  renderFeatures();
+  renderMatrix();
+  renderHours();
+  renderVersions();
+  renderErrors();
+  renderBrowsers();
+  renderHealth();
+  renderFeed();
+  writeHash();
+}
+
+// Chart.js defaults from the CSS tokens, re-read on every render so theme changes stick.
+function chartTheme() {
+  const text = cssVar("--color-text-soft"), grid = cssVar("--viz-grid");
+  Chart.defaults.font.family = cssVar("--font") || "Montserrat, sans-serif";
+  Chart.defaults.font.size = 11;
+  Chart.defaults.color = text;
+  Chart.defaults.borderColor = grid;
+  Chart.defaults.plugins.tooltip.backgroundColor = cssVar("--tooltip-bg");
+  Chart.defaults.plugins.tooltip.titleColor = cssVar("--tooltip-text");
+  Chart.defaults.plugins.tooltip.bodyColor = cssVar("--tooltip-text");
+  Chart.defaults.plugins.tooltip.padding = 8;
+  Chart.defaults.plugins.tooltip.cornerRadius = 4;
+  Chart.defaults.plugins.tooltip.displayColors = false;
+  Chart.defaults.animation.duration = 300;
+  return { text, grid, primary: cssVar("--viz-primary"), primarySoft: cssVar("--viz-primary-soft"), error: cssVar("--viz-error"), errorSoft: cssVar("--viz-error-soft"),
+           ramp: [6, 5, 4, 3, 2].map((i) => cssVar("--viz-heat-" + i)), other: cssVar("--s-other") };
+}
+function chart(id, cfg, tableData) {
+  if (state.charts[id]) { state.charts[id].destroy(); }
+  const canvas = $("#" + id);
+  const c = new Chart(canvas, cfg);
+  state.charts[id] = c;
+  c.$table = tableData;   // rows for the Table / CSV actions
+  return c;
+}
+function emptyState(cardId, msg, good) {
+  const body = $("#" + cardId + " .body");
+  let e = body.querySelector(".empty");
+  if (!msg) { if (e) e.remove(); return; }
+  if (!e) { e = document.createElement("div"); e.className = "empty"; body.appendChild(e); }
+  e.className = "empty" + (good ? " good" : ""); e.textContent = msg;
+}
+
+// ---------------------------------------------------------------- KPIs
+function delta(el, cur, prev) {
+  if (!el) return;
+  el.textContent = ""; el.classList.remove("up", "down", "flat");
+  if (prev == null || cur == null) return;
+  if (!prev && !cur) { el.textContent = "±0"; el.classList.add("flat"); return; }
+  if (!prev) { el.textContent = "new"; el.classList.add("up"); return; }
+  const pct = (cur - prev) / prev * 100;
+  el.textContent = (pct > 0 ? "▲ " : pct < 0 ? "▼ " : "") + Math.abs(pct).toLocaleString(undefined, { maximumFractionDigits: 0 }) + "%";
+  el.classList.add(pct > 0.5 ? "up" : pct < -0.5 ? "down" : "flat");
+}
+function median(arr) { if (!arr.length) return null; const s = [...arr].sort((a, b) => a - b); const m = Math.floor(s.length / 2); return s.length % 2 ? s[m] : (s[m - 1] + s[m]) / 2; }
+function renderKpis() {
+  const d = state.data;
+  const set = (id, v, cls) => { const el = $("#" + id + " [data-v]"); el.textContent = v; };
+  set("kpiEvents", fmt(d.total)); delta($("#kpiEvents [data-d]"), d.total, d.prevTotal);
+  const sessions = d.sessions ? d.sessions.length : null;
+  set("kpiSessions", fmt(sessions)); delta($("#kpiSessions [data-d]"), sessions, d.prevSessions ? d.prevSessions.length : null);
+  if (d.sessions && d.sessions.length) {
+    const evPer = median(d.sessions.map((s) => s.n));
+    const durs = d.sessions.filter((s) => s.t1 > s.t0).map((s) => (s.t1 - s.t0) / 60000);
+    const dur = median(durs);
+    $("#kpiSessions [data-c]").textContent = `median ${fmt(evPer)} events` + (dur != null ? `, ${dur < 1 ? "<1" : fmt1(dur)} min` : "");
+  } else $("#kpiSessions [data-c]").textContent = "vs previous period";
+  set("kpiWidgets", fmt(d.byWidgetAll ? d.byWidgetAll.length : null));
+  set("kpiApps", fmt(d.byApp ? d.byApp.length : null));
+  set("kpiErrors", fmt(d.errors)); delta($("#kpiErrors [data-d]"), d.errors, d.prevErrors);
+  const rate = d.total ? d.errors / d.total * 1000 : (d.total === 0 ? 0 : null);
+  const prevRate = d.prevTotal ? d.prevErrors / d.prevTotal * 1000 : null;
+  if (state.filters.action) { set("kpiRate", "–"); delta($("#kpiRate [data-d]"), null, null); $("#kpiRate [data-c]").textContent = "not meaningful with an action filter"; }
+  else { set("kpiRate", rate == null ? "–" : rate < 10 ? fmt1(rate) : fmt(rate)); delta($("#kpiRate [data-d]"), rate, prevRate); $("#kpiRate [data-c]").textContent = "errors per 1,000 events"; }
+  $("#kpiErrors").setAttribute("aria-pressed", String(state.filters.action === "error"));
+  $$("#kpiEvents [data-c], #kpiErrors [data-c]").forEach((el) => el.textContent = d.prev ? "vs previous " + (d.range.label.replace(/^last /, "")) : d.range.label);
+  // sparklines
+  spark($("#kpiEvents [data-spark]"), d.trend && d.trend.events, cssVar("--viz-primary"));
+  spark($("#kpiErrors [data-spark]"), d.trend && d.trend.errors, cssVar("--viz-error"));
+}
+function spark(canvas, series, color) {
+  if (!canvas) return;
+  const ctx = canvas.getContext("2d");
+  const W = canvas.width = canvas.offsetWidth * 2, H = canvas.height = canvas.offsetHeight * 2;
+  ctx.clearRect(0, 0, W, H);
+  if (!series || series.length < 2) return;
+  const bins = binSeries(series, 24);
+  const max = Math.max(...bins.map((b) => b.n), 1);
+  ctx.strokeStyle = color; ctx.lineWidth = 2.5; ctx.lineJoin = "round"; ctx.beginPath();
+  bins.forEach((b, i) => { const x = i / (bins.length - 1) * (W - 4) + 2, y = H - 3 - (b.n / max) * (H - 6); i ? ctx.lineTo(x, y) : ctx.moveTo(x, y); });
+  ctx.stroke();
+}
+// Fold a {t,n} series into k equal time bins for a sparkline.
+function binSeries(series, k) {
+  const d = state.data.trend; const t0 = d.start, t1 = d.to, w = (t1 - t0) / k || 1;
+  const out = Array.from({ length: k }, (_, i) => ({ t: t0 + i * w, n: 0 }));
+  for (const p of series) { const i = Math.min(k - 1, Math.max(0, Math.floor((p.t - t0) / w))); out[i].n += p.n; }
+  return out;
+}
+
+// ---------------------------------------------------------------- trend
+function localBuckets(series, unit) {
+  // Rebucket UTC hour points into local day (or hour) buckets, fill gaps with zero.
+  const d = state.data.trend; const map = new Map();
+  const keyOf = (ms) => { const x = new Date(ms); return unit === "hour" ? new Date(x.getFullYear(), x.getMonth(), x.getDate(), x.getHours()).getTime() : new Date(x.getFullYear(), x.getMonth(), x.getDate()).getTime(); };
+  for (const p of series) map.set(keyOf(p.t), (map.get(keyOf(p.t)) || 0) + p.n);
+  const step = unit === "hour" ? 3600000 : 86400000;
+  const out = [];
+  for (let t = keyOf(d.start); t <= keyOf(d.to); ) {
+    out.push({ t, n: map.get(t) || 0 });
+    const nx = new Date(t); if (unit === "hour") nx.setHours(nx.getHours() + 1); else nx.setDate(nx.getDate() + 1); t = nx.getTime();
+    if (out.length > 5000) break;
+  }
+  return out;
+}
+function renderTrend() {
+  const d = state.data, th = chartTheme(); const tr = d.trend;
+  if (!tr) { emptyState("cardTrend", "Trend unavailable"); return; }
+  const spanDays = (tr.to - tr.start) / 86400000;
+  const unit = spanDays <= 2 && tr.local ? "hour" : "day";
+  const series = state.trendMode === "errors" ? tr.errors : tr.events;
+  let pts;
+  if (tr.mode === "bins") pts = series; else pts = localBuckets(series, unit);
+  if (spanDays > 400 && tr.mode !== "bins") {   // fold to weeks so the line stays readable
+    const wk = new Map(); for (const p of pts) { const k = Math.floor(p.t / (7 * 86400000)) * 7 * 86400000; wk.set(k, (wk.get(k) || 0) + p.n); }
+    pts = [...wk.entries()].sort((a, b) => a[0] - b[0]).map(([t, n]) => ({ t, n }));
+  }
+  const binLabel = tr.mode === "bins" ? (tr.binMs >= 30 * 86400000 ? "per month" : tr.binMs >= 7 * 86400000 ? "per week" : tr.binMs >= 86400000 ? "per day" : "per hour") : spanDays > 400 ? "per week" : unit === "hour" ? "per hour" : "per day";
+  $("#trendSub").textContent = binLabel + (tr.local ? "" : ", UTC bins");
+  const isErr = state.trendMode === "errors";
+  const color = isErr ? th.error : th.primary, soft = isErr ? th.errorSoft : th.primarySoft;
+  const labels = pts.map((p) => p.t);
+  const labelFmt = (t) => unit === "hour" && spanDays <= 2 ? new Date(t).toLocaleTimeString(undefined, { hour: "2-digit" }) : dtfDay.format(new Date(t));
+  emptyState("cardTrend", pts.every((p) => !p.n) ? (isErr ? "No errors in this period" : "No events in this period") : null, isErr);
+  chart("chTrend", {
+    type: "line",
+    data: { labels, datasets: [{ label: isErr ? "Errors" : "Events", data: pts.map((p) => p.n), borderColor: color, backgroundColor: soft, fill: true, borderWidth: 2, pointRadius: pts.length > 90 ? 0 : 2.5, pointHoverRadius: 5, pointBackgroundColor: color, tension: 0.2 }] },
+    options: { responsive: true, maintainAspectRatio: false, interaction: { mode: "index", intersect: false },
+      plugins: { legend: { display: false }, tooltip: { callbacks: { title: (it) => (unit === "hour" ? dtf : dtfDay).format(new Date(labels[it[0].dataIndex])), label: (it) => `${fmt(it.raw)} ${isErr ? "errors" : "events"}` } } },
+      scales: { x: { grid: { display: false }, ticks: { maxTicksLimit: 10, maxRotation: 0, callback: (v, i) => labelFmt(labels[i]) } },
+                y: { beginAtZero: true, grid: { color: th.grid }, ticks: { maxTicksLimit: 5, callback: (v) => fmt(v) }, border: { display: false } } } },
+  }, { columns: ["When", isErr ? "Errors" : "Events"], rows: pts.map((p) => [unit === "hour" ? dtf.format(new Date(p.t)) : new Date(p.t).toISOString().slice(0, 10), p.n]) });
+}
+
+// ---------------------------------------------------------------- horizontal bars
+function hbar(id, cardId, rows, labelKey, opts) {
+  const th = chartTheme();
+  if (!rows || !rows.length) { emptyState(cardId, opts.emptyMsg || "No data in this period"); chart(id, { type: "bar", data: { labels: [], datasets: [] }, options: { responsive: true, maintainAspectRatio: false } }); return; }
+  emptyState(cardId, null);
+  const top = rows.slice(0, opts.top || 15);
+  const active = opts.activeValue;
+  const colors = top.map((r) => active == null ? (opts.color || th.primary) : (r[labelKey] === active ? (opts.color || th.primary) : th.other));
+  chart(id, {
+    type: "bar",
+    data: { labels: top.map((r) => r[labelKey] == null ? "(blank)" : r[labelKey]), datasets: [{ label: "Events", data: top.map((r) => r.n), backgroundColor: colors, borderRadius: 4, borderSkipped: "start", barPercentage: 0.7, categoryPercentage: 0.9, maxBarThickness: 22 }] },
+    options: { indexAxis: "y", responsive: true, maintainAspectRatio: false, onClick: (e, els) => { if (els.length) opts.onClick(top[els[0].index][labelKey]); },
+      onHover: (e, els) => { e.native.target.style.cursor = els.length ? "pointer" : "default"; },
+      plugins: { legend: { display: false }, tooltip: { callbacks: { label: (it) => `${fmt(it.raw)} events` + (opts.total ? ` · ${(it.raw / opts.total * 100).toFixed(1)}%` : "") } } },
+      scales: { x: { beginAtZero: true, grid: { color: th.grid }, ticks: { maxTicksLimit: 5, callback: (v) => fmt(v) }, border: { display: false } },
+                y: { grid: { display: false }, ticks: { autoSkip: false, font: { size: 11 }, callback: function (v) { const l = this.getLabelForValue(v); return l.length > 26 ? l.slice(0, 25) + "…" : l; } } } } },
+  }, { columns: [opts.columnName || "Name", "Events"], rows: rows.map((r) => [r[labelKey], r.n]) });
+}
+function renderPopular() {
+  const d = state.data; const rows = d.byWidget || [];
+  const total = rows.reduce((a, r) => a + r.n, 0);
+  hbar("chPopular", "cardPopular", rows, "widget_name", { top: 15, total, activeValue: state.filters.widget, columnName: "Widget", onClick: (v) => setFilter("widget", v) });
+}
+function renderFeatures() {
+  const d = state.data; const rows = d.byAction || [];
+  const total = rows.reduce((a, r) => a + r.n, 0);
+  hbar("chFeatures", "cardFeatures", rows, "action", { top: 15, total, activeValue: state.filters.action, columnName: "Action", emptyMsg: "No feature actions yet. Widgets report them with b.action('name')", onClick: (v) => setFilter("action", v) });
+}
+
+// ---------------------------------------------------------------- heatmaps
+function heatColor(v, max) {
+  if (!v) return cssVar("--viz-heat-0");
+  const step = Math.min(6, Math.max(1, Math.ceil(v / max * 6)));
+  return cssVar("--viz-heat-" + step);
+}
+function renderMatrix() {
+  const d = state.data, el = $("#matrix"); el.innerHTML = "";
+  const rows = d.matrix || [];
+  if (!rows.length) { emptyState("cardMatrix", "No data in this period"); return; }
+  emptyState("cardMatrix", null);
+  const apps = [...new Set(rows.map((r) => r.app_name || "(unknown app)"))];
+  const widgetTotals = new Map();
+  for (const r of rows) widgetTotals.set(r.widget_name, (widgetTotals.get(r.widget_name) || 0) + r.n);
+  const widgets = [...widgetTotals.entries()].sort((a, b) => b[1] - a[1]).slice(0, 28).map((e) => e[0]);
+  const cell = new Map(rows.map((r) => [(r.app_name || "(unknown app)") + "|" + r.widget_name, r.n]));
+  const max = Math.max(...rows.map((r) => r.n));
+  el.style.gridTemplateColumns = `minmax(90px, 150px) repeat(${widgets.length}, minmax(14px, 1fr))`;
+  el.style.gridTemplateRows = `96px repeat(${apps.length}, minmax(14px, 1fr))`;
+  const frag = document.createDocumentFragment();
+  frag.appendChild(Object.assign(document.createElement("div"), { className: "lbl" }));
+  for (const w of widgets) { const l = document.createElement("div"); l.className = "lbl rot"; l.textContent = w; l.title = w; frag.appendChild(l); }
+  for (const a of apps) {
+    const l = document.createElement("div"); l.className = "lbl"; l.textContent = a; l.title = a; frag.appendChild(l);
+    for (const w of widgets) {
+      const v = cell.get(a + "|" + w) || 0;
+      const c = document.createElement("div"); c.className = "cell" + (v ? " clickable" : "");
+      c.style.background = heatColor(v, max);
+      if (state.filters.app === a && state.filters.widget === w) c.style.outline = "2px solid " + cssVar("--color-text");
+      c.setAttribute("role", "cell"); c.setAttribute("aria-label", `${w} in ${a}: ${fmt(v)} events`);
+      c.addEventListener("mousemove", (e) => showTip(`<b>${esc(w)}</b> in ${esc(a)}<br>${fmt(v)} events`, e.clientX, e.clientY));
+      c.addEventListener("mouseleave", hideTip);
+      if (v) c.addEventListener("click", () => { hideTip(); setFilters({ app: a, widget: w }); });
+      frag.appendChild(c);
+    }
+  }
+  el.appendChild(frag);
+  el.$table = { columns: ["App", ...widgets], rows: apps.map((a) => [a, ...widgets.map((w) => cell.get(a + "|" + w) || 0)]) };
+}
+function renderHours() {
+  const d = state.data, el = $("#hours"); el.innerHTML = "";
+  const tr = d.trend;
+  if (!tr || tr.mode !== "hours") { emptyState("cardHours", tr && tr.mode === "days" ? "Hourly detail is available for periods up to 120 days" : "Hourly detail needs a service that supports SQL expressions"); return; }
+  const series = state.trendMode === "errors" ? tr.errors : tr.events;
+  if (!series.length) { emptyState("cardHours", state.trendMode === "errors" ? "No errors in this period" : "No events in this period", state.trendMode === "errors"); return; }
+  emptyState("cardHours", null);
+  const grid = Array.from({ length: 7 }, () => new Array(24).fill(0));
+  for (const p of series) { const x = new Date(p.t); grid[x.getDay()][x.getHours()] += p.n; }
+  const max = Math.max(1, ...grid.flat());
+  const days = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
+  const order = [1, 2, 3, 4, 5, 6, 0];
+  el.style.gridTemplateColumns = `34px repeat(24, minmax(8px, 1fr))`;
+  el.style.gridTemplateRows = `18px repeat(7, minmax(14px, 1fr))`;
+  const frag = document.createDocumentFragment();
+  frag.appendChild(Object.assign(document.createElement("div"), { className: "lbl" }));
+  for (let h = 0; h < 24; h++) { const l = document.createElement("div"); l.className = "lbl top"; l.textContent = h % 3 === 0 ? (h === 0 ? "12a" : h < 12 ? h + "a" : h === 12 ? "12p" : (h - 12) + "p") : ""; frag.appendChild(l); }
+  for (const dow of order) {
+    const l = document.createElement("div"); l.className = "lbl"; l.textContent = days[dow]; frag.appendChild(l);
+    for (let h = 0; h < 24; h++) {
+      const v = grid[dow][h]; const c = document.createElement("div"); c.className = "cell"; c.style.background = heatColor(v, max);
+      c.setAttribute("role", "cell"); c.setAttribute("aria-label", `${days[dow]} ${h}:00: ${fmt(v)}`);
+      c.addEventListener("mousemove", (e) => showTip(`<b>${days[dow]} ${pad2(h)}:00–${pad2(h)}:59</b><br>${fmt(v)} ${state.trendMode === "errors" ? "errors" : "events"}`, e.clientX, e.clientY));
+      c.addEventListener("mouseleave", hideTip);
+      frag.appendChild(c);
+    }
+  }
+  el.appendChild(frag);
+  $("#hoursSub").textContent = (state.trendMode === "errors" ? "errors" : "events") + " by weekday and hour, local time";
+  el.$table = { columns: ["Day", ...Array.from({ length: 24 }, (_, h) => pad2(h) + ":00")], rows: order.map((dow) => [days[dow], ...grid[dow]]) };
+}
+
+// ---------------------------------------------------------------- versions
+function versionRows() {
+  const d = state.data; const byW = new Map();
+  for (const r of d.byVersion || []) { if (!byW.has(r.widget_name)) byW.set(r.widget_name, []); byW.get(r.widget_name).push({ v: r.widget_version || "?", n: r.n }); }
+  const out = [];
+  for (const w of CONFIG.customWidgets) {
+    const vs = (byW.get(w) || []).sort((a, b) => cmpVer(b.v, a.v));
+    const latest = state.gh[w];
+    let status = "mute", label = "Not seen";
+    if (vs.length) {
+      if (!latest) { status = "mute"; label = CONFIG.github.owner ? "Checking…" : "No GitHub"; }
+      else if (latest === "none") { status = "mute"; label = "No release"; }
+      else {
+        const behind = vs.filter((x) => cmpVer(x.v, latest) < 0).reduce((a, x) => a + x.n, 0);
+        const ahead = vs.some((x) => cmpVer(x.v, latest) > 0);
+        const total = vs.reduce((a, x) => a + x.n, 0);
+        if (ahead) { status = "warn"; label = "Ahead of release"; }
+        else if (!behind) { status = "good"; label = "Current"; }
+        else if (behind === total) { status = "bad"; label = "Behind"; }
+        else { status = "warn"; label = `Mixed · ${Math.round(behind / total * 100)}% old`; }
+      }
+    }
+    out.push({ widget: w, versions: vs, latest, status, label, events: vs.reduce((a, x) => a + x.n, 0) });
+  }
+  return out.sort((a, b) => b.events - a.events);
+}
+function renderVersions() {
+  const rows = versionRows(); const tb = $("#tblVersions tbody"); tb.innerHTML = "";
+  const seen = rows.filter((r) => r.versions.length);
+  $("#versionsSub").textContent = CONFIG.github.owner ? "vs latest GitHub release" : "deployed versions";
+  if (!seen.length) { emptyState("cardVersions", "No custom widget events in this period"); return; }
+  emptyState("cardVersions", null);
+  for (const r of rows) {
+    if (!r.versions.length && state.customOnly) continue;
+    const tr = document.createElement("tr"); tr.className = "clickable"; if (state.filters.widget === r.widget) tr.style.background = cssVar("--color-accent-soft");
+    const chips = r.versions.map((x) => `<button class="vchip ${r.latest && r.latest !== "none" ? (cmpVer(x.v, r.latest) < 0 ? "old" : "latest") : ""}" data-w="${esc(r.widget)}" data-v="${esc(x.v)}" title="Filter to ${esc(r.widget)} ${esc(x.v)}">${esc(x.v)}<small>${fmt(x.n)}</small></button>`).join("");
+    tr.innerHTML = `<td><b>${esc(r.widget)}</b></td><td style="white-space:normal">${chips || '<span class="badge mute">not seen</span>'}</td><td class="mono">${r.latest && r.latest !== "none" ? esc(r.latest) : (r.latest === "none" ? "–" : "")}</td><td><span class="badge ${r.status}">${esc(r.label)}</span></td>`;
+    tr.addEventListener("click", (e) => { const b = e.target.closest(".vchip"); if (b) setFilters({ widget: b.dataset.w, version: b.dataset.v }); else setFilter("widget", r.widget); });
+    tb.appendChild(tr);
+  }
+  $("#tblVersions").$table = { columns: ["Widget", "Version", "Events", "Latest release", "Status"], rows: rows.flatMap((r) => r.versions.length ? r.versions.map((x) => [r.widget, x.v, x.n, r.latest || "", r.label]) : [[r.widget, "", 0, r.latest || "", r.label]]) };
+}
+
+// ---------------------------------------------------------------- error explorer
+function signature(text) {
+  // First line, with numbers, ids and URLs blanked so the same bug groups across pages.
+  let s = String(text || "").split("\n")[0].trim();
+  s = s.replace(/https?:\/\/\S+/g, "<url>").replace(/\b[0-9a-f]{16,}\b/gi, "<id>").replace(/\b\d+(\.\d+)?\b/g, "#");
+  return s.slice(0, 200) || "(no message)";
+}
+function renderErrors() {
+  const d = state.data, el = $("#errlist"); el.innerHTML = "";
+  const rows = d.errorRows || [];
+  $("#errorsSub").textContent = rows.length >= CONFIG.errorSampleCount ? `grouped by message; newest ${fmt(rows.length)} shown` : "grouped by message; newest first";
+  if (!rows.length) { emptyState("cardErrors", "No errors in this period", true); return; }
+  emptyState("cardErrors", null);
+  const groups = new Map();
+  for (const r of rows) {
+    const k = signature(r.error_text || r.detail);
+    if (!groups.has(k)) groups.set(k, { sig: k, n: 0, first: r.occurred_at, last: r.occurred_at, widgets: new Map(), versions: new Set(), apps: new Set(), browsers: new Set(), samples: [] });
+    const g = groups.get(k); g.n++; g.first = Math.min(g.first, r.occurred_at); g.last = Math.max(g.last, r.occurred_at);
+    g.widgets.set(r.widget_name, (g.widgets.get(r.widget_name) || 0) + 1); if (r.widget_version) g.versions.add(r.widget_version); if (r.app_name) g.apps.add(r.app_name); if (r.browser) g.browsers.add(r.browser);
+    if (g.samples.length < 3) g.samples.push(r);
+  }
+  const list = [...groups.values()].sort((a, b) => b.last - a.last);
+  const frag = document.createDocumentFragment();
+  for (const g of list) {
+    const det = document.createElement("details"); det.className = "errgrp";
+    const widgets = [...g.widgets.entries()].sort((a, b) => b[1] - a[1]).map(([w, n]) => `<button class="linkish" data-w="${esc(w)}" style="padding:0">${esc(w)}</button>${g.widgets.size > 1 ? ` (${n})` : ""}`).join(", ");
+    det.innerHTML = `<summary><span class="count">${fmt(g.n)}</span><div><div class="msg">${esc(g.sig)}</div><div class="meta"><span><b>Widget</b> ${widgets}</span>${g.versions.size ? `<span><b>Versions</b> ${esc([...g.versions].join(", "))}</span>` : ""}${g.apps.size ? `<span><b>Apps</b> ${esc([...g.apps].join(", "))}</span>` : ""}${g.browsers.size ? `<span><b>Browsers</b> ${esc([...g.browsers].join(", "))}</span>` : ""}</div></div><div class="when">last ${esc(ago(g.last))}<br>first ${esc(dtfDay.format(new Date(g.first)))}</div></summary>
+      <div class="samples">${g.samples.map((s) => `<div><div class="sample-h">${esc(dtfFull.format(new Date(s.occurred_at)))} · ${esc(s.widget_name)} ${esc(s.widget_version || "")} · ${esc(s.app_name || "")} · ${esc(s.browser || "")}${s.detail ? " · " + esc(s.detail) : ""}</div><pre>${esc(s.error_text || "(no stack)")}</pre></div>`).join("")}</div>`;
+    det.querySelectorAll("button[data-w]").forEach((b) => b.addEventListener("click", (e) => { e.preventDefault(); e.stopPropagation(); setFilter("widget", b.dataset.w); }));
+    frag.appendChild(det);
+  }
+  el.appendChild(frag);
+  el.$table = { columns: ["Count", "Message", "Widgets", "Versions", "Apps", "First", "Last"], rows: list.map((g) => [g.n, g.sig, [...g.widgets.keys()].join("; "), [...g.versions].join("; "), [...g.apps].join("; "), new Date(g.first).toISOString(), new Date(g.last).toISOString()]) };
+}
+
+// ---------------------------------------------------------------- browsers
+function renderBrowsers() {
+  const d = state.data, th = chartTheme(); const rows = (d.byBrowser || []).slice();
+  if (!rows.length) { emptyState("cardBrowsers", "No data"); chart("chBrowsers", { type: "doughnut", data: { labels: [], datasets: [] }, options: { responsive: true, maintainAspectRatio: false } }); return; }
+  emptyState("cardBrowsers", null);
+  const top = rows.slice(0, 5); const rest = rows.slice(5).reduce((a, r) => a + r.n, 0);
+  const labels = top.map((r) => r.browser || "Unknown"); const data = top.map((r) => r.n);
+  if (rest) { labels.push("Other"); data.push(rest); }
+  const total = data.reduce((a, b) => a + b, 0);
+  // City Blue ramp, darkest for the largest share; the legend and tooltips carry identity.
+  const colors = labels.map((l, i) => l === "Other" ? th.other : th.ramp[i % th.ramp.length]);
+  const dim = state.filters.browser ? labels.map((l) => l === state.filters.browser ? 1 : 0.25) : null;
+  chart("chBrowsers", {
+    type: "doughnut",
+    data: { labels, datasets: [{ data, backgroundColor: colors.map((c, i) => dim ? c + (dim[i] < 1 ? "55" : "") : c), borderColor: cssVar("--color-surface"), borderWidth: 2, hoverOffset: 6 }] },
+    options: { responsive: true, maintainAspectRatio: false, cutout: "62%", onClick: (e, els) => { if (els.length && labels[els[0].index] !== "Other") setFilter("browser", labels[els[0].index]); },
+      onHover: (e, els) => { e.native.target.style.cursor = els.length ? "pointer" : "default"; },
+      plugins: { legend: { position: "right", labels: { boxWidth: 10, boxHeight: 10, padding: 8, generateLabels: (c) => c.data.labels.map((l, i) => ({ text: `${l}  ${(c.data.datasets[0].data[i] / total * 100).toFixed(0)}%`, fillStyle: colors[i], strokeStyle: colors[i], index: i, fontColor: th.text })) } },
+                 tooltip: { callbacks: { label: (it) => `${fmt(it.raw)} events · ${(it.raw / total * 100).toFixed(1)}%` } } } },
+  }, { columns: ["Browser", "Events", "Share"], rows: labels.map((l, i) => [l, data[i], (data[i] / total * 100).toFixed(1) + "%"]) });
+}
+
+// ---------------------------------------------------------------- widget health
+const healthSort = { key: "events", dir: -1 };
+function renderHealth() {
+  const d = state.data; const t = $("#tblHealth"); const thead = t.querySelector("thead"), tb = t.querySelector("tbody");
+  const ev = new Map((d.byWidgetAll || []).map((r) => [r.widget_name, r.n]));
+  const er = new Map((d.errByWidget || []).map((r) => [r.widget_name, r.n]));
+  const apps = new Map(); for (const r of d.matrix || []) { if (!apps.has(r.widget_name)) apps.set(r.widget_name, new Set()); apps.get(r.widget_name).add(r.app_name); }
+  const vers = new Map(); for (const r of versionRows()) vers.set(r.widget, r);
+  const totalCustom = CONFIG.customWidgets.reduce((a, w) => a + (ev.get(w) || 0), 0);
+  let rows = CONFIG.customWidgets.map((w) => {
+    const e = ev.get(w) || 0, x = er.get(w) || 0, v = vers.get(w);
+    return { widget: w, events: e, share: totalCustom ? e / totalCustom * 100 : 0, apps: apps.has(w) ? apps.get(w).size : 0, errors: x, rate: e ? x / e * 1000 : 0, versions: v ? v.versions.length : 0, latest: v && v.latest && v.latest !== "none" ? v.latest : "", status: v ? v.label : "", statusCls: v ? v.status : "mute" };
+  });
+  const cols = [["widget", "Widget"], ["events", "Events", "num"], ["share", "Share", "num"], ["apps", "Apps", "num"], ["errors", "Errors", "num"], ["rate", "Err / 1k", "num"], ["latest", "Latest"], ["status", "Status"]];
+  thead.innerHTML = "<tr>" + cols.map(([k, l, cls]) => `<th class="sortable ${cls || ""}" data-k="${k}">${l}${healthSort.key === k ? `<span class="dir">${healthSort.dir < 0 ? "▼" : "▲"}</span>` : ""}</th>`).join("") + "</tr>";
+  thead.querySelectorAll("th").forEach((th) => th.addEventListener("click", () => { const k = th.dataset.k; if (healthSort.key === k) healthSort.dir *= -1; else { healthSort.key = k; healthSort.dir = typeof rows[0][k] === "number" ? -1 : 1; } renderHealth(); }));
+  rows.sort((a, b) => { const x = a[healthSort.key], y = b[healthSort.key]; return (typeof x === "number" ? x - y : String(x).localeCompare(String(y))) * healthSort.dir; });
+  const maxE = Math.max(1, ...rows.map((r) => r.events)), maxX = Math.max(1, ...rows.map((r) => r.errors));
+  tb.innerHTML = rows.map((r) => `<tr class="clickable" data-w="${esc(r.widget)}" ${state.filters.widget === r.widget ? `style="background:${cssVar("--color-accent-soft")}"` : ""}>
+    <td><b>${esc(r.widget)}</b></td>
+    <td class="num"><span class="bar" style="width:${Math.round(r.events / maxE * 60)}px"></span>${fmt(r.events)}</td>
+    <td class="num">${r.share ? r.share.toFixed(1) + "%" : "–"}</td>
+    <td class="num">${r.apps || "–"}</td>
+    <td class="num">${r.errors ? `<span class="bar err" style="width:${Math.round(r.errors / maxX * 40)}px"></span>` : ""}${r.errors ? fmt(r.errors) : "–"}</td>
+    <td class="num">${r.events ? (r.rate ? `<span class="badge ${r.rate > 20 ? "bad" : r.rate > 5 ? "warn" : "good"}">${fmt1(r.rate)}</span>` : '<span class="badge good">0</span>') : "–"}</td>
+    <td class="mono">${esc(r.latest)}</td>
+    <td>${r.status ? `<span class="badge ${r.statusCls}">${esc(r.status)}</span>` : ""}</td></tr>`).join("");
+  tb.querySelectorAll("tr").forEach((tr) => tr.addEventListener("click", () => setFilter("widget", tr.dataset.w)));
+  t.$table = { columns: cols.map((c) => c[1]), rows: rows.map((r) => cols.map(([k]) => typeof r[k] === "number" ? Math.round(r[k] * 10) / 10 : r[k])) };
+}
+
+// ---------------------------------------------------------------- feed
+function renderFeed() {
+  const d = state.data, el = $("#feed"); const rows = d.feed || [];
+  const oid = state.oidField;
+  el.innerHTML = rows.map((r) => `<div class="ev ${r[oid] > state.lastFeedOid && state.lastFeedOid ? "new" : ""}">
+      <span class="w">${esc(r.widget_name)} <span class="mono" style="font-weight:400;color:var(--color-text-mute)">${esc(r.widget_version || "")}</span></span>
+      <span class="t" title="${esc(dtfFull.format(new Date(r.occurred_at)))}">${esc(ago(r.occurred_at))}</span>
+      <span class="a ${r.action === "error" ? "err" : ""}">${esc(r.action)}</span>
+      <span class="t">${esc(r.app_name || "")} · ${esc(r.browser || "")}</span>
+      ${r.detail ? `<span class="d" title="${esc(r.detail)}">${esc(r.detail)}</span>` : ""}
+    </div>`).join("") || '<div class="empty" style="position:static">No events yet</div>';
+  if (rows.length) state.lastFeedOid = Math.max(state.lastFeedOid, ...rows.map((r) => r[oid] || 0));
+  const f = filterWhere(); $("#feedSub").textContent = `newest ${CONFIG.feedCount}` + (f.length ? ", current filters, any date" : ", any date");
+}
+
+//================================================================
+//  Filters, hash, UI wiring
+//================================================================
+function setFilter(k, v) { setFilters({ [k]: state.filters[k] === v ? null : v }); }
+function setFilters(obj) {
+  Object.assign(state.filters, obj);
+  if (obj.widget === null) state.filters.version = null;
+  refreshAll();
+}
+function clearFilters() { for (const k in state.filters) state.filters[k] = null; refreshAll(); }
+function renderFilterChips() {
+  const el = $("#activeFilters"); const f = state.filters; const names = { widget: "Widget", version: "Version", app: "App", action: "Action", browser: "Browser" };
+  const chips = Object.keys(f).filter((k) => f[k]).map((k) => `<span class="chip filter"><span>${names[k]}: <b>${esc(f[k])}</b></span><button class="x" data-k="${k}" aria-label="Remove ${names[k]} filter">×</button></span>`);
+  el.innerHTML = chips.length ? chips.join("") : '<span class="hint" id="filterHint">Click a bar, cell or row to filter everything</span>';
+  el.querySelectorAll(".x").forEach((b) => b.addEventListener("click", () => setFilters({ [b.dataset.k]: null })));
+  $("#clearFilters").hidden = !chips.length;
+  $("#customOnly").checked = state.customOnly;
+  $$("#timeChips button[data-days]").forEach((b) => { const on = (state.period.kind === "days" && String(state.period.days) === b.dataset.days) || (state.period.kind === b.dataset.days); b.classList.toggle("active", on); b.setAttribute("aria-pressed", String(on)); });
+  $("#customDateBtn").classList.toggle("active", state.period.kind === "custom");
+  $("#customDateBtn").textContent = state.period.kind === "custom" ? `${dtfDay.format(state.period.from)} – ${dtfDay.format(state.period.to)}` : "Custom…";
+  $$("#trendMode button").forEach((b) => { const on = b.dataset.mode === state.trendMode; b.classList.toggle("active", on); b.setAttribute("aria-pressed", String(on)); });
+}
+function writeHash() {
+  const p = new URLSearchParams();
+  const per = state.period;
+  p.set("p", per.kind === "days" ? String(per.days) : per.kind);
+  if (per.kind === "custom") { p.set("from", per.from.toISOString().slice(0, 10)); p.set("to", per.to.toISOString().slice(0, 10)); }
+  for (const k in state.filters) if (state.filters[k]) p.set(k, state.filters[k]);
+  if (state.customOnly) p.set("custom", "1");
+  if (state.trendMode !== "events") p.set("mode", state.trendMode);
+  history.replaceState(null, "", "#" + p.toString());
+}
+function readHash() {
+  const p = new URLSearchParams(location.hash.slice(1));
+  const per = p.get("p");
+  if (per === "ytd" || per === "all") state.period = { kind: per };
+  else if (per === "custom" && p.get("from") && p.get("to")) state.period = { kind: "custom", from: new Date(p.get("from") + "T00:00:00"), to: new Date(p.get("to") + "T00:00:00") };
+  else if (per && !isNaN(Number(per))) state.period = { kind: "days", days: Number(per) };
+  for (const k in state.filters) if (p.get(k)) state.filters[k] = p.get(k);
+  state.customOnly = p.get("custom") === "1";
+  if (p.get("mode") === "errors") state.trendMode = "errors";
+}
+function setPeriod(kind, days) {
+  state.period = kind === "days" ? { kind, days } : { kind };
+  refreshAll();
+}
+
+function wireUi() {
+  $$(".theme-btn").forEach((b) => b.addEventListener("click", () => applyTheme(b.dataset.themePref)));
+  $("#refreshBtn").addEventListener("click", () => refreshAll());
+  $("#liveBtn").addEventListener("click", () => { state.live = !state.live; $("#liveBtn").setAttribute("aria-pressed", String(state.live)); scheduleRefresh(); setLive("ok"); toast(state.live ? "Live: refreshing every minute" : "Back to 5 minute refresh"); });
+  $("#helpBtn").addEventListener("click", () => { $("#kbdHint").hidden = !$("#kbdHint").hidden; });
+  $("#clearFilters").addEventListener("click", clearFilters);
+  $("#customOnly").addEventListener("change", (e) => { state.customOnly = e.target.checked; refreshAll(); });
+  $$("#timeChips button[data-days]").forEach((b) => b.addEventListener("click", () => { const v = b.dataset.days; v === "ytd" || v === "all" ? setPeriod(v) : setPeriod("days", Number(v)); }));
+  $$("#trendMode button").forEach((b) => b.addEventListener("click", () => { state.trendMode = b.dataset.mode; renderFilterChips(); renderTrend(); renderHours(); writeHash(); }));
+  $("#kpiErrors").addEventListener("click", () => setFilter("action", "error"));
+  $("#kpiErrors").addEventListener("keydown", (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); setFilter("action", "error"); } });
+  $("#copyLink").addEventListener("click", async () => { writeHash(); try { await navigator.clipboard.writeText(location.href); toast("Link copied"); } catch (e) { prompt("Copy this link", location.href); } });
+  // custom dates
+  const pop = $("#datePopover");
+  $("#customDateBtn").addEventListener("click", () => { pop.hidden = !pop.hidden; $("#customDateBtn").setAttribute("aria-expanded", String(!pop.hidden)); if (!pop.hidden) { const r = periodRange(); $("#dateFrom").value = (r.from || new Date(Date.now() - 30 * 86400000)).toISOString().slice(0, 10); $("#dateTo").value = new Date().toISOString().slice(0, 10); $("#dateFrom").focus(); } });
+  $("#dateCancel").addEventListener("click", () => { pop.hidden = true; });
+  $("#dateApply").addEventListener("click", () => { const f = $("#dateFrom").value, t = $("#dateTo").value; if (!f || !t || f > t) { toast("Pick a start and end, start first"); return; } state.period = { kind: "custom", from: new Date(f + "T00:00:00"), to: new Date(t + "T00:00:00") }; pop.hidden = true; refreshAll(); });
+  // card actions
+  $$(".card > h2 .actions").forEach((box) => {
+    const card = box.closest(".card"); const canvas = card.querySelector("canvas"); const tableHost = card.querySelector("table") || card.querySelector(".heat") || card.querySelector(".errlist");
+    const mk = (title, svg, fn) => { const b = document.createElement("button"); b.className = "icon-btn"; b.title = title; b.setAttribute("aria-label", title); b.innerHTML = svg; b.addEventListener("click", (e) => { e.stopPropagation(); fn(); }); box.appendChild(b); };
+    if (canvas) mk("Show as table", '<svg viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M3 10h18M9 4v16"/></svg>', () => toggleTable(card));
+    if (canvas) mk("Download PNG", '<svg viewBox="0 0 24 24"><rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="8.5" cy="8.5" r="1.5"/><path d="M21 15l-5-5L5 21"/></svg>', () => downloadPng(card));
+    mk("Download CSV", '<svg viewBox="0 0 24 24"><path d="M12 3v12M6 9l6 6 6-6M4 21h16"/></svg>', () => downloadCsv(card));
+    mk("Fullscreen (F)", '<svg viewBox="0 0 24 24"><path d="M8 3H3v5M16 3h5v5M8 21H3v-5M16 21h5v-5"/></svg>', () => toggleFullscreen(card));
+  });
+  // keyboard
+  document.addEventListener("keydown", (e) => {
+    if (e.target.matches("input, textarea, select") || e.ctrlKey || e.metaKey || e.altKey) return;
+    const k = e.key;
+    if (k === "Escape") { const fs = $(".card.fullscreen"); if (fs) toggleFullscreen(fs); else if (!$("#kbdHint").hidden) $("#kbdHint").hidden = true; else if (!$("#datePopover").hidden) $("#datePopover").hidden = true; else clearFilters(); }
+    else if (k === "?") $("#kbdHint").hidden = !$("#kbdHint").hidden;
+    else if (k === "r" || k === "R") refreshAll();
+    else if (k === "l" || k === "L") $("#liveBtn").click();
+    else if (k === "c" || k === "C") { $("#customOnly").checked = !$("#customOnly").checked; $("#customOnly").dispatchEvent(new Event("change")); }
+    else if (k === "e" || k === "E") setFilter("action", "error");
+    else if (k === "t" || k === "T") { const order = ["auto", "light", "dark"]; const cur = document.documentElement.getAttribute("data-theme-pref"); applyTheme(order[(order.indexOf(cur) + 1) % 3]); }
+    else if (k === "f" || k === "F") { const c = document.querySelector(".card:hover"); if (c) toggleFullscreen(c); }
+    else if ("123456".includes(k)) { const map = { 1: ["days", 1], 2: ["days", 7], 3: ["days", 30], 4: ["days", 90], 5: ["ytd"], 6: ["all"] }[k]; setPeriod(map[0], map[1]); }
+  });
+  document.addEventListener("click", (e) => { if (!e.target.closest("#datePopover, #customDateBtn")) $("#datePopover").hidden = true; });
+  window.addEventListener("resize", () => { const d = state.data; if (d.range) { spark($("#kpiEvents [data-spark]"), d.trend && d.trend.events, cssVar("--viz-primary")); spark($("#kpiErrors [data-spark]"), d.trend && d.trend.errors, cssVar("--viz-error")); } });
+}
+
+// ---------------------------------------------------------------- card actions
+function cardTable(card) {
+  const canvas = card.querySelector("canvas");
+  if (canvas && state.charts[canvas.id]) return state.charts[canvas.id].$table;
+  const host = card.querySelector("table, .heat, .errlist");
+  return host && host.$table;
+}
+function toggleTable(card) {
+  const body = card.querySelector(".body"); let tv = body.querySelector(".tbl-view.alt");
+  const canvas = body.querySelector("canvas");
+  if (tv) { tv.remove(); canvas.style.display = ""; state.charts[canvas.id] && state.charts[canvas.id].resize(); return; }
+  const t = cardTable(card); if (!t) return;
+  tv = document.createElement("div"); tv.className = "tbl-view alt"; tv.style.position = "absolute"; tv.style.inset = "4px 12px 12px";
+  tv.innerHTML = `<table class="data"><thead><tr>${t.columns.map((c) => `<th>${esc(c)}</th>`).join("")}</tr></thead><tbody>${t.rows.map((r) => `<tr>${r.map((v) => `<td class="${typeof v === "number" ? "num" : ""}">${typeof v === "number" ? fmt(v) : esc(v)}</td>`).join("")}</tr>`).join("")}</tbody></table>`;
+  canvas.style.display = "none"; body.appendChild(tv);
+}
+function downloadCsv(card) {
+  const t = cardTable(card); if (!t) { toast("Nothing to export"); return; }
+  const cell = (v) => { const s = String(v == null ? "" : v); return /[",\n]/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s; };
+  const csv = [t.columns.map(cell).join(","), ...t.rows.map((r) => r.map(cell).join(","))].join("\r\n");
+  const name = (card.querySelector("h2").childNodes[0].textContent || "data").trim().toLowerCase().replace(/[^a-z0-9]+/g, "-");
+  saveBlob(new Blob(["﻿" + csv], { type: "text/csv;charset=utf-8" }), `beacon-${name}-${new Date().toISOString().slice(0, 10)}.csv`);
+}
+function downloadPng(card) {
+  const canvas = card.querySelector("canvas"); const c = canvas && state.charts[canvas.id]; if (!c) return;
+  const out = document.createElement("canvas"); out.width = canvas.width; out.height = canvas.height + 60;
+  const ctx = out.getContext("2d"); ctx.fillStyle = cssVar("--color-surface"); ctx.fillRect(0, 0, out.width, out.height);
+  ctx.fillStyle = cssVar("--color-text"); ctx.font = `600 ${14 * (canvas.width / canvas.offsetWidth)}px ${cssVar("--font")}`;
+  ctx.fillText((card.querySelector("h2").childNodes[0].textContent || "").trim() + " · " + state.data.range.label, 16, 34 * (canvas.width / canvas.offsetWidth) / 2 + 10);
+  ctx.drawImage(canvas, 0, 60);
+  out.toBlob((b) => saveBlob(b, `beacon-${canvas.id}-${new Date().toISOString().slice(0, 10)}.png`));
+}
+function saveBlob(blob, name) { const a = document.createElement("a"); a.href = URL.createObjectURL(blob); a.download = name; document.body.appendChild(a); a.click(); setTimeout(() => { URL.revokeObjectURL(a.href); a.remove(); }, 500); }
+function toggleFullscreen(card) {
+  const on = !card.classList.contains("fullscreen");
+  $$(".card.fullscreen").forEach((c) => c.classList.remove("fullscreen"));
+  if (on) card.classList.add("fullscreen");
+  const canvas = card.querySelector("canvas"); if (canvas && state.charts[canvas.id]) setTimeout(() => state.charts[canvas.id].resize(), 50);
+}
+</script>
+</body>
+</html>
